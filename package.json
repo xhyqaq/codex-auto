@@ -20,7 +20,7 @@
   ],
   "type": "module",
   "bin": {
-    "codex-auto": "./dist/index.js"
+    "codex-auto": "dist/index.js"
   },
   "files": [
     "dist",
