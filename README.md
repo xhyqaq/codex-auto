@@ -1,60 +1,62 @@
 # codex-auto
 
-`codex-auto` 是一个给 `codex` CLI 用的多账号切换器。
+English | [中文](./README.zh-CN.md)
 
-它维护多套独立的 `CODEX_HOME`，当当前账号命中额度限制时，自动切到下一个账号，并尽量恢复到刚才的会话继续执行。
+A multi-account switcher for the `codex` CLI.
 
-## 适用场景
+It maintains multiple isolated `CODEX_HOME` directories and automatically rotates to the next account when the current one hits a rate limit, resuming the session where it left off.
 
-- 你有多个可用的 Codex 账号
-- 不想手动改 `auth.json`、`config.toml`
-- 希望额度耗尽后自动切号并恢复会话
+## Use Cases
 
-## 当前能力
+- You have multiple Codex accounts available
+- You don't want to manually edit `auth.json` or `config.toml`
+- You want automatic account rotation and session recovery when quota is exhausted
 
-- 管理多套账号配置
-- 首次添加账号时直接跑 `codex login`
-- 支持导入现成的 `auth.json` 和 `config.toml`
-- 启动受管 `codex` 会话
-- 命中额度限制后自动切到下一个账号
-- 优先用记录的 session id 恢复会话
-- session id 失效时回退到 `codex resume --last`
-- 恢复时自动补发 `Continue`
-- 记录运行日志和状态文件
+## Features
 
-## 前置要求
+- Manage multiple account configurations
+- Run `codex login` automatically when adding a new account
+- Import existing `auth.json` and `config.toml` files
+- Launch managed `codex` sessions
+- Automatically switch to the next account on rate limit
+- Resume sessions using recorded session IDs
+- Fall back to `codex resume --last` if the session ID is invalid
+- Automatically send `Continue` on resume
+- Log sessions and terminal transcripts
+
+## Prerequisites
 
 - Node.js 18+
-- 本机已安装可执行的 `codex` CLI
-- `codex` 可以正常执行 `codex login`、`codex resume`
+- `codex` CLI installed and executable
+- `codex login` and `codex resume` working properly
 
-## 安装
+## Installation
 
-推荐安装方式：
+Install globally via npm:
 
 ```bash
 npm install -g codex-auto
 ```
 
-安装后验证：
+Verify the installation:
 
 ```bash
 codex-auto --help
 ```
 
-升级到最新版本：
+Upgrade to the latest version:
 
 ```bash
 npm install -g codex-auto@latest
 ```
 
-卸载：
+Uninstall:
 
 ```bash
 npm uninstall -g codex-auto
 ```
 
-如果你是本地开发这个仓库，再使用下面这套方式：
+For local development:
 
 ```bash
 npm install
@@ -62,63 +64,63 @@ npm run build
 npm link
 ```
 
-## 快速开始
+## Quick Start
 
-添加账号：
+Add accounts:
 
 ```bash
 codex-auto add a
 codex-auto add b
 ```
 
-查看账号列表：
+List accounts:
 
 ```bash
 codex-auto list
 ```
 
-启动受管会话：
+Start a managed session:
 
 ```bash
 codex-auto
 ```
 
-从指定账号启动：
+Start with a specific account:
 
 ```bash
 codex-auto --account b
 ```
 
-删除账号：
+Remove an account:
 
 ```bash
 codex-auto remove b
 ```
 
-## 导入已有配置
+## Importing Existing Configurations
 
-如果你已经有现成的账号目录，可以直接导入：
+If you already have account credentials, import them directly:
 
 ```bash
 codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 ```
 
-规则是：
+Rules:
 
-- `--auth` 导入账号凭据
-- `--config` 导入账号配置
-- 如果没有提供 `--auth`，会自动执行一次 `codex login`
-- `config.toml` 会至少保证包含 `cli_auth_credentials_store = "file"`
+- `--auth` imports account credentials
+- `--config` imports account configuration
+- If `--auth` is not provided, `codex login` runs automatically
+- `config.toml` is guaranteed to include `cli_auth_credentials_store = "file"`
 
-## 工作方式
+## How It Works
 
-`codex-auto` 会维护一个自己的目录，默认在：
+`codex-auto` maintains its own data directory, by default at:
 
 ```bash
 ~/.codex-auto
 ```
 
-目录结构大致如下：
+Directory structure:
 
 ```text
 ~/.codex-auto/
@@ -137,47 +139,45 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 └── state.json
 ```
 
-其中：
+- `accounts/<name>/` — per-account configuration
+- `runtime/` — the working directory actually used by `codex`
+- `state.json` — account order, current index, last successful account, latest session ID
+- `logs/` — session logs and terminal transcripts
 
-- `accounts/<name>/` 保存每个账号自己的配置
-- `runtime/` 是当前实际交给 `codex` 使用的运行时目录
-- `state.json` 保存账号顺序、当前索引、上次成功账号、最近 session id
-- `logs/` 保存会话日志和终端 transcript
+Before each launch, `codex-auto` syncs the target account's `auth.json` and `config.toml` into `runtime/`, then starts `codex` using that runtime directory.
 
-每次启动前，`codex-auto` 会把目标账号的 `auth.json` 和 `config.toml` 同步到 `runtime/`，然后用这个 runtime 启动 `codex`。
+## Account Switching & Session Recovery
 
-## 切号与恢复逻辑
+The current version only triggers a switch when a genuine rate-limit message is detected, avoiding false positives from warning-like output.
 
-当前版本只在检测到真实的额度耗尽提示时触发切号，避免把提醒类文案误判成失败。
+When a rate limit is hit:
 
-命中额度限制后：
-
-1. 标记当前账号已耗尽
-2. 切换到下一个可用账号
-3. 从 runtime 中读取最新 session id
-4. 优先执行：
+1. Mark the current account as exhausted
+2. Switch to the next available account
+3. Read the latest session ID from runtime
+4. Attempt to resume:
 
 ```bash
 codex resume <session-id> Continue
 ```
 
-5. 如果该 session id 已失效，再回退到：
+5. If the session ID is invalid, fall back to:
 
 ```bash
 codex resume --last
 ```
 
-为了避免历史 transcript 干扰，恢复场景下只有最新 prompt 之后的新输出才会参与额度检测。
+To prevent stale transcript interference, only output after the most recent prompt is used for rate-limit detection during recovery.
 
-## 环境变量
+## Environment Variables
 
 - `CODEX_AUTO_HOME`
-  指定 `codex-auto` 的数据目录，默认是 `~/.codex-auto`
+  Data directory for `codex-auto`. Default: `~/.codex-auto`
 
 - `CODEX_AUTO_CODEX_BIN`
-  指定底层 `codex` 可执行文件路径，默认是 `codex`
+  Path to the `codex` executable. Default: `codex`
 
-示例：
+Example:
 
 ```bash
 CODEX_AUTO_HOME=/tmp/codex-auto \
@@ -185,7 +185,7 @@ CODEX_AUTO_CODEX_BIN=/opt/homebrew/bin/codex \
 codex-auto --account a
 ```
 
-## 常用命令
+## Command Reference
 
 ```bash
 codex-auto add <name>
@@ -196,44 +196,44 @@ codex-auto --account <name>
 codex-auto
 ```
 
-## 开发
+## Development
 
-安装依赖：
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-构建：
+Build:
 
 ```bash
 npm run build
 ```
 
-测试：
+Test:
 
 ```bash
 npm test
 ```
 
-本地重新挂载命令：
+Link locally:
 
 ```bash
 npm link
 ```
 
-打包检查：
+Pack check:
 
 ```bash
 npm pack --json
 ```
 
-## 已知限制
+## Known Limitations
 
-- 当前额度检测依赖终端输出中的已知失败提示，不是官方结构化事件
-- `resume --last` fallback 不会额外拼 prompt，只负责先把会话恢复起来
-- 账号切换基于本地状态顺序，不包含权重、优先级和健康检查
+- Rate-limit detection relies on known failure messages in terminal output, not official structured events
+- `resume --last` fallback does not re-inject the original prompt; it only restores the session
+- Account rotation is based on local state order, with no weighting, priority, or health checks
 
-## 许可证
+## License
 
 MIT
