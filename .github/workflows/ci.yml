@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack release tarball
+        run: |
+          npm pack --json
+          echo "TARBALL=$(node -p \"const p=require('./package.json'); p.name + '-' + p.version + '.tgz'\")" >> "$GITHUB_ENV"
+
+      - name: Install packed CLI globally
+        run: npm install -g "./$TARBALL"
+
+      - name: Smoke test installed CLI
+        run: codex-auto --help
