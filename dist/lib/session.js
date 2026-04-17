@@ -100,7 +100,7 @@ async function launchResumeInvocation(options) {
             appHome: options.appHome,
             workspaceDir: options.workspaceDir,
             codexCommand: options.codexCommand,
-            args: ['resume', '--no-alt-screen', options.sessionId, '继续'],
+            args: ['resume', '--no-alt-screen', options.sessionId, 'Continue'],
             env: options.env,
             stdin: options.stdin,
             stdout: options.stdout,

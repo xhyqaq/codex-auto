@@ -37,7 +37,7 @@ describe('managed session runner', () => {
       expect(result.finalAccount).toBe('b');
 
       const logText = await readFile(logPath, 'utf8');
-      expect(logText).toContain('"args":["resume","--no-alt-screen","session-123","继续"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","session-123","Continue"]');
       await expect(loadState(appHome)).resolves.toMatchObject({
         lastSessionId: 'session-123'
       });
@@ -120,7 +120,7 @@ describe('managed session runner', () => {
       expect(result.finalAccount).toBe('b');
 
       const logText = await readFile(logPath, 'utf8');
-      expect(logText).toContain('"args":["resume","--no-alt-screen","session-456","继续"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","session-456","Continue"]');
     } finally {
       await cleanupTempDir(appHome);
     }
@@ -158,7 +158,7 @@ describe('managed session runner', () => {
       expect(result.finalAccount).toBe('b');
 
       const logText = await readFile(logPath, 'utf8');
-      expect(logText).toContain('"args":["resume","--no-alt-screen","session-from-file","继续"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","session-from-file","Continue"]');
       await expect(loadState(appHome)).resolves.toMatchObject({
         lastSessionId: 'session-from-file'
       });
@@ -200,7 +200,7 @@ describe('managed session runner', () => {
       expect(result.exhaustedAll).toBe(false);
 
       const logText = await readFile(logPath, 'utf8');
-      expect(logText).toContain('"args":["resume","--no-alt-screen","session-history","继续"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","session-history","Continue"]');
       await expect(loadState(appHome)).resolves.toMatchObject({
         currentIndex: 1,
         lastSuccessfulAccount: 'b'
@@ -242,7 +242,7 @@ describe('managed session runner', () => {
       expect(result.finalAccount).toBe('b');
 
       const logText = await readFile(logPath, 'utf8');
-      expect(logText).toContain('"args":["resume","--no-alt-screen","missing-session","继续"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","missing-session","Continue"]');
       expect(logText).toContain('"args":["resume","--last","--no-alt-screen"]');
     } finally {
       await cleanupTempDir(appHome);
