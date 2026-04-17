@@ -84,25 +84,51 @@ async function launchInvocation(options: {
       stdio: 'inherit'
     });
     let exitCode = 0;
+    let quotaDetected = false;
+    let polling = false;
+
+    const pollTranscript = async (): Promise<void> => {
+      if (polling || quotaDetected) {
+        return;
+      }
+
+      polling = true;
+      try {
+        const transcript = await readTextIfExists(transcriptPath);
+        const output = sanitizeTerminalOutput(transcript ?? '');
+        if (hasQuotaError(output)) {
+          quotaDetected = true;
+          child.kill('SIGTERM');
+        }
+      } finally {
+        polling = false;
+      }
+    };
+
+    const interval = setInterval(() => {
+      void pollTranscript();
+    }, 200);
 
     return new Promise<InvocationResult>((resolve) => {
       child.on('error', async (error) => {
+        clearInterval(interval);
         const transcript = await readTextIfExists(transcriptPath);
         const output = sanitizeTerminalOutput(transcript ?? '');
         resolve({
           exitCode: 1,
-          quotaError: hasQuotaError(output),
+          quotaError: quotaDetected || hasQuotaError(output),
           output: `${output}\n${error.message}`.trim()
         });
       });
 
       child.on('close', async (code) => {
+        clearInterval(interval);
         exitCode = code ?? 1;
         const transcript = await readTextIfExists(transcriptPath);
         const output = sanitizeTerminalOutput(transcript ?? '');
         resolve({
           exitCode,
-          quotaError: hasQuotaError(output),
+          quotaError: quotaDetected || hasQuotaError(output),
           output
         });
       });
@@ -118,17 +144,29 @@ async function launchInvocation(options: {
         stdio: 'pipe'
       });
   let exitCode = 0;
+  let quotaDetected = false;
+
+  const triggerQuotaRotation = (): void => {
+    if (quotaDetected || !hasQuotaError(sanitizedOutput)) {
+      return;
+    }
+
+    quotaDetected = true;
+    child.kill('SIGTERM');
+  };
 
   child.stdout?.on('data', (chunk: Buffer | string) => {
     const data = chunk.toString();
     stdout.write(data);
     sanitizedOutput = `${sanitizedOutput}${sanitizeTerminalOutput(data)}`.slice(-20000);
+    triggerQuotaRotation();
   });
 
   child.stderr?.on('data', (chunk: Buffer | string) => {
     const data = chunk.toString();
     stdout.write(data);
     sanitizedOutput = `${sanitizedOutput}${sanitizeTerminalOutput(data)}`.slice(-20000);
+    triggerQuotaRotation();
   });
 
   const cleanupCallbacks: Array<() => void> = [];
@@ -140,7 +178,7 @@ async function launchInvocation(options: {
 
       resolve({
         exitCode: 1,
-        quotaError: false,
+        quotaError: quotaDetected || hasQuotaError(sanitizedOutput),
         output: `${sanitizedOutput}\n${error.message}`
       });
     });
@@ -153,7 +191,7 @@ async function launchInvocation(options: {
 
       resolve({
         exitCode,
-        quotaError: hasQuotaError(sanitizedOutput),
+        quotaError: quotaDetected || hasQuotaError(sanitizedOutput),
         output: sanitizedOutput
       });
     });

@@ -3,6 +3,7 @@ import stripAnsi from 'strip-ansi';
 const quotaPatterns = [
   /\busage limit exceeded\b/i,
   /\busagelimitexceeded\b/i,
+  /\byou(?:'|’)ve hit your usage limit\b/i,
   /\brate limit(?: reached| exceeded)?\b/i,
   /\bquota exceeded\b/i,
   /\blimit reached\b/i,

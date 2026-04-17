@@ -80,4 +80,40 @@ describe('managed session runner', () => {
       await cleanupTempDir(appHome);
     }
   });
+
+  test('switches accounts when the quota prompt appears before the process exits', async () => {
+    const appHome = await createTempAppHome();
+    const logPath = path.join(appHome, 'fake-codex.log');
+    try {
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        lastSuccessfulAccount: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_WAIT_ON_QUOTA: '1'
+        },
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+
+      const logText = await readFile(logPath, 'utf8');
+      expect(logText).toContain('"args":["resume","--last","--no-alt-screen","继续"]');
+    } finally {
+      await cleanupTempDir(appHome);
+    }
+  });
 });
