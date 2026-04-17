@@ -37,6 +37,14 @@ export function runtimeConfigPath(appHome: string): string {
   return path.join(runtimeHome(appHome), 'config.toml');
 }
 
+export function runtimeSessionIndexPath(appHome: string): string {
+  return path.join(runtimeHome(appHome), 'session_index.jsonl');
+}
+
+export function runtimeSessionsRoot(appHome: string): string {
+  return path.join(runtimeHome(appHome), 'sessions');
+}
+
 export function runtimeLockPath(appHome: string): string {
   return path.join(runtimeHome(appHome), '.lock');
 }

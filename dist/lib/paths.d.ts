@@ -7,6 +7,8 @@ export declare function accountMetaPath(appHome: string, name: string): string;
 export declare function runtimeHome(appHome: string): string;
 export declare function runtimeAuthPath(appHome: string): string;
 export declare function runtimeConfigPath(appHome: string): string;
+export declare function runtimeSessionIndexPath(appHome: string): string;
+export declare function runtimeSessionsRoot(appHome: string): string;
 export declare function runtimeLockPath(appHome: string): string;
 export declare function statePath(appHome: string): string;
 export declare function logsRoot(appHome: string): string;

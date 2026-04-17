@@ -14,6 +14,9 @@ if (!codexHome) {
 mkdirSync(codexHome, { recursive: true });
 
 const authPath = path.join(codexHome, 'auth.json');
+const sessionIndexPath = path.join(codexHome, 'session_index.jsonl');
+const sessionId = process.env.FAKE_CODEX_SESSION_ID ?? 'session-from-index';
+const sessionFilePath = path.join(codexHome, 'sessions', '2026', '04', '17', `rollout-2026-04-17T18-00-00-${sessionId}.jsonl`);
 const authText = existsSync(authPath) ? readFileSync(authPath, 'utf8') : '';
 
 if (logPath) {
@@ -26,6 +29,32 @@ if (args[0] === 'login') {
   process.exit(0);
 }
 
+mkdirSync(path.dirname(sessionFilePath), { recursive: true });
+writeFileSync(
+  sessionFilePath,
+  `${JSON.stringify({
+    timestamp: '2026-04-17T10:00:00.000Z',
+    type: 'session_meta',
+    payload: {
+      id: sessionId,
+      cwd: process.cwd()
+    }
+  })}\n`,
+  'utf8'
+);
+
+if (process.env.FAKE_CODEX_SKIP_SESSION_INDEX !== '1') {
+  writeFileSync(
+    sessionIndexPath,
+    `${JSON.stringify({
+      id: sessionId,
+      thread_name: 'fake-thread',
+      updated_at: '2026-04-17T10:00:00.000Z'
+    })}\n`,
+    'utf8'
+  );
+}
+
 if (authText.includes('"account": "a"') || authText.includes('"account":"a"')) {
   if (process.env.FAKE_CODEX_WAIT_ON_QUOTA === '1') {
     process.stdout.write("■ You've hit your usage limit. To get more access now, send a request to your admin.\n");
@@ -33,13 +62,31 @@ if (authText.includes('"account": "a"') || authText.includes('"account":"a"')) {
     process.stdout.write('Switch to gpt-5.1-codex-mini for lower credit usage?\n');
     setInterval(() => {}, 1000);
   } else {
-    process.stdout.write('Error: usage limit exceeded for this account\n');
+    process.stdout.write("■ You've hit your usage limit. To get more access now, send a request to your admin.\n");
+    process.stdout.write('or try again at 11:10 PM.\n');
     process.exit(1);
   }
 }
 
 if (args[0] === 'resume') {
-  process.stdout.write(`Resumed with ${args.at(-1) ?? ''}\n`);
+  const resumeUsesLast = args.includes('--last');
+  const positionalArgs = args.slice(1).filter((arg) => !arg.startsWith('--'));
+  const sessionId = resumeUsesLast ? 'last' : positionalArgs[0] ?? '';
+  const prompt = positionalArgs.at(-1) ?? '';
+
+  if (process.env.FAKE_CODEX_FAIL_SESSION_ID === '1' && !resumeUsesLast) {
+    process.stderr.write(`ERROR: No saved session found with ID ${sessionId}. Run \`codex resume\` without an ID to choose from existing sessions.\n`);
+    process.exit(1);
+  }
+
+  if (process.env.FAKE_CODEX_RESUME_REPLAYS_OLD_QUOTA === '1') {
+    process.stdout.write("■ You've hit your usage limit. To get more access now, send a request to your admin.\n");
+    process.stdout.write('› \n');
+    process.stdout.write('resumed prompt ready\n');
+    process.exit(0);
+  }
+
+  process.stdout.write(`Resumed with ${sessionId} ${prompt}\n`);
   process.exit(0);
 }
 

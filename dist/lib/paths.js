@@ -27,6 +27,12 @@ export function runtimeAuthPath(appHome) {
 export function runtimeConfigPath(appHome) {
     return path.join(runtimeHome(appHome), 'config.toml');
 }
+export function runtimeSessionIndexPath(appHome) {
+    return path.join(runtimeHome(appHome), 'session_index.jsonl');
+}
+export function runtimeSessionsRoot(appHome) {
+    return path.join(runtimeHome(appHome), 'sessions');
+}
 export function runtimeLockPath(appHome) {
     return path.join(runtimeHome(appHome), '.lock');
 }

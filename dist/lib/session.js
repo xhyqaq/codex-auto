@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { acquireRuntimeLock } from './lock.js';
 import { createSessionLogger } from './logger.js';
 import { buildCodexShellCommand, resolveCodexCommand } from './codex-bin.js';
-import { hasQuotaError, sanitizeTerminalOutput } from './detection.js';
+import { hasPromptMarker, hasQuotaError, sanitizeTerminalOutput } from './detection.js';
 import { getAccountByName, getCurrentAccount, pickNextAccount } from './rotation.js';
 import { loadState, saveState } from './state.js';
-import { logsRoot, runtimeHome } from './paths.js';
+import { logsRoot, runtimeHome, runtimeSessionIndexPath, runtimeSessionsRoot } from './paths.js';
 import { ensureAppLayout, syncRuntimeAccount } from './runtime.js';
 import { markAccountUsed } from './accounts.js';
 import { readTextIfExists } from './fs.js';
@@ -16,12 +17,134 @@ function canUseInteractiveTerminal(stdin, stdout, stderr) {
 function toPtyEnv(env) {
     return Object.fromEntries(Object.entries(env).filter((entry) => typeof entry[1] === 'string'));
 }
+function hasMissingSessionError(output) {
+    return /No saved session found with ID/i.test(output);
+}
+async function readLatestSessionId(appHome) {
+    const indexText = await readTextIfExists(runtimeSessionIndexPath(appHome));
+    if (indexText) {
+        const lines = indexText
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .reverse();
+        for (const line of lines) {
+            try {
+                const parsed = JSON.parse(line);
+                if (typeof parsed.id === 'string' && parsed.id.length > 0) {
+                    return parsed.id;
+                }
+            }
+            catch {
+                continue;
+            }
+        }
+    }
+    return readLatestSessionIdFromFiles(appHome);
+}
+async function readLatestSessionIdFromFiles(appHome) {
+    const sessionFiles = await collectSessionFiles(runtimeSessionsRoot(appHome));
+    const latestFile = sessionFiles.sort().at(-1);
+    if (!latestFile) {
+        return null;
+    }
+    const fileText = await readTextIfExists(latestFile);
+    const firstLine = fileText?.split('\n').find((line) => line.trim().length > 0);
+    if (firstLine) {
+        try {
+            const parsed = JSON.parse(firstLine);
+            if (typeof parsed.payload?.id === 'string' && parsed.payload.id.length > 0) {
+                return parsed.payload.id;
+            }
+        }
+        catch {
+            // Fall through to filename parsing.
+        }
+    }
+    const match = path.basename(latestFile).match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i);
+    return match?.[1] ?? null;
+}
+async function collectSessionFiles(root) {
+    try {
+        const entries = await readdir(root, { withFileTypes: true });
+        const nested = await Promise.all(entries.map(async (entry) => {
+            const entryPath = path.join(root, entry.name);
+            if (entry.isDirectory()) {
+                return collectSessionFiles(entryPath);
+            }
+            if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+                return [entryPath];
+            }
+            return [];
+        }));
+        return nested.flat();
+    }
+    catch {
+        return [];
+    }
+}
+async function persistLastSessionId(appHome, sessionId) {
+    if (!sessionId) {
+        return;
+    }
+    const state = await loadState(appHome);
+    if (state.lastSessionId === sessionId) {
+        return;
+    }
+    state.lastSessionId = sessionId;
+    await saveState(appHome, state);
+}
+async function launchResumeInvocation(options) {
+    if (options.sessionId) {
+        const byIdResult = await launchInvocation({
+            appHome: options.appHome,
+            workspaceDir: options.workspaceDir,
+            codexCommand: options.codexCommand,
+            args: ['resume', '--no-alt-screen', options.sessionId, '继续'],
+            env: options.env,
+            stdin: options.stdin,
+            stdout: options.stdout,
+            interactive: options.interactive
+        });
+        if (!byIdResult.quotaError && byIdResult.exitCode !== 0 && hasMissingSessionError(byIdResult.output)) {
+            await options.logger.log('resume_fallback_last', {
+                sessionId: options.sessionId
+            });
+        }
+        else {
+            return byIdResult;
+        }
+    }
+    return launchInvocation({
+        appHome: options.appHome,
+        workspaceDir: options.workspaceDir,
+        codexCommand: options.codexCommand,
+        args: ['resume', '--last', '--no-alt-screen'],
+        env: options.env,
+        stdin: options.stdin,
+        stdout: options.stdout,
+        interactive: options.interactive
+    });
+}
 async function launchInvocation(options) {
     const command = buildCodexShellCommand(options.codexCommand, options.args);
     const shell = options.env.SHELL || '/bin/zsh';
     const runtimePath = runtimeHome(options.appHome);
     const stdout = options.stdout;
+    const deferQuotaDetectionUntilPrompt = options.args[0] === 'resume';
     let sanitizedOutput = '';
+    let quotaDetectionArmed = !deferQuotaDetectionUntilPrompt;
+    let quotaDetectionStartIndex = 0;
+    const evaluateQuotaOutput = (output) => {
+        if (!quotaDetectionArmed) {
+            if (hasPromptMarker(output)) {
+                quotaDetectionArmed = true;
+                quotaDetectionStartIndex = output.length;
+            }
+            return false;
+        }
+        return hasQuotaError(output.slice(quotaDetectionStartIndex));
+    };
     if (options.interactive) {
         const transcriptPath = path.join(logsRoot(options.appHome), `typescript-${Date.now()}.log`);
         const child = spawn('script', ['-qF', transcriptPath, shell, '-lc', command], {
@@ -43,7 +166,7 @@ async function launchInvocation(options) {
             try {
                 const transcript = await readTextIfExists(transcriptPath);
                 const output = sanitizeTerminalOutput(transcript ?? '');
-                if (hasQuotaError(output)) {
+                if (evaluateQuotaOutput(output)) {
                     quotaDetected = true;
                     child.kill('SIGTERM');
                 }
@@ -62,7 +185,7 @@ async function launchInvocation(options) {
                 const output = sanitizeTerminalOutput(transcript ?? '');
                 resolve({
                     exitCode: 1,
-                    quotaError: quotaDetected || hasQuotaError(output),
+                    quotaError: quotaDetected || evaluateQuotaOutput(output),
                     output: `${output}\n${error.message}`.trim()
                 });
             });
@@ -73,7 +196,7 @@ async function launchInvocation(options) {
                 const output = sanitizeTerminalOutput(transcript ?? '');
                 resolve({
                     exitCode,
-                    quotaError: quotaDetected || hasQuotaError(output),
+                    quotaError: quotaDetected || evaluateQuotaOutput(output),
                     output
                 });
             });
@@ -90,7 +213,7 @@ async function launchInvocation(options) {
     let exitCode = 0;
     let quotaDetected = false;
     const triggerQuotaRotation = () => {
-        if (quotaDetected || !hasQuotaError(sanitizedOutput)) {
+        if (quotaDetected || !evaluateQuotaOutput(sanitizedOutput)) {
             return;
         }
         quotaDetected = true;
@@ -116,7 +239,7 @@ async function launchInvocation(options) {
             }
             resolve({
                 exitCode: 1,
-                quotaError: quotaDetected || hasQuotaError(sanitizedOutput),
+                quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
                 output: `${sanitizedOutput}\n${error.message}`
             });
         });
@@ -127,7 +250,7 @@ async function launchInvocation(options) {
             }
             resolve({
                 exitCode,
-                quotaError: quotaDetected || hasQuotaError(sanitizedOutput),
+                quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
                 output: sanitizedOutput
             });
         });
@@ -161,27 +284,46 @@ export async function runManagedSession(options) {
         }
         const exhausted = new Set();
         let firstRun = true;
+        let lastSessionId = state.lastSessionId;
         while (true) {
             await syncRuntimeAccount(options.appHome, current.name, options.workspaceDir);
             await logger.log('launch', {
                 account: current.name,
-                resume: !firstRun
+                resume: !firstRun,
+                sessionId: firstRun ? null : lastSessionId
             });
-            const args = firstRun ? ['--no-alt-screen'] : ['resume', '--last', '--no-alt-screen', '继续'];
-            const result = await launchInvocation({
-                appHome: options.appHome,
-                workspaceDir: options.workspaceDir,
-                codexCommand,
-                args,
-                env,
-                stdin,
-                stdout,
-                interactive
-            });
+            const result = firstRun
+                ? await launchInvocation({
+                    appHome: options.appHome,
+                    workspaceDir: options.workspaceDir,
+                    codexCommand,
+                    args: ['--no-alt-screen'],
+                    env,
+                    stdin,
+                    stdout,
+                    interactive
+                })
+                : await launchResumeInvocation({
+                    appHome: options.appHome,
+                    workspaceDir: options.workspaceDir,
+                    codexCommand,
+                    env,
+                    stdin,
+                    stdout,
+                    interactive,
+                    sessionId: lastSessionId,
+                    logger
+                });
+            const discoveredSessionId = await readLatestSessionId(options.appHome);
+            if (discoveredSessionId) {
+                lastSessionId = discoveredSessionId;
+                await persistLastSessionId(options.appHome, discoveredSessionId);
+            }
             if (!result.quotaError) {
                 const latestState = await loadState(options.appHome);
                 latestState.currentIndex = current.index;
                 latestState.lastSuccessfulAccount = current.name;
+                latestState.lastSessionId = lastSessionId;
                 await saveState(options.appHome, latestState);
                 await markAccountUsed(options.appHome, current.name);
                 await logger.log('exit', { account: current.name, exitCode: result.exitCode });
@@ -201,6 +343,7 @@ export async function runManagedSession(options) {
             if (!next) {
                 const latestState = await loadState(options.appHome);
                 latestState.currentIndex = current.index;
+                latestState.lastSessionId = lastSessionId;
                 await saveState(options.appHome, latestState);
                 stderr.write(`\n[codex-auto] All configured accounts are exhausted.\n`);
                 await logger.log('all_exhausted', {
@@ -218,6 +361,7 @@ export async function runManagedSession(options) {
             current = next;
             const latestState = await loadState(options.appHome);
             latestState.currentIndex = next.index;
+            latestState.lastSessionId = lastSessionId;
             await saveState(options.appHome, latestState);
             firstRun = false;
         }

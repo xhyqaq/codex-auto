@@ -7,6 +7,7 @@ const appStateSchema = z.object({
   accounts: z.array(z.string()),
   currentIndex: z.number().int().nonnegative().nullable(),
   lastSuccessfulAccount: z.string().nullable(),
+  lastSessionId: z.string().nullable().default(null),
   updatedAt: z.string()
 });
 
@@ -18,6 +19,7 @@ export function createEmptyState(): AppState {
     accounts: [],
     currentIndex: null,
     lastSuccessfulAccount: null,
+    lastSessionId: null,
     updatedAt: new Date().toISOString()
   };
 }
@@ -30,27 +32,29 @@ export async function loadState(appHome: string): Promise<AppState> {
   }
 
   const parsed = appStateSchema.parse(JSON.parse(fileContents));
-  if (parsed.accounts.length === 0) {
+  const normalized = parsed;
+  if (normalized.accounts.length === 0) {
     return {
-      ...parsed,
+      ...normalized,
       currentIndex: null
     };
   }
 
-  if (parsed.currentIndex === null || parsed.currentIndex >= parsed.accounts.length) {
+  if (normalized.currentIndex === null || normalized.currentIndex >= normalized.accounts.length) {
     return {
-      ...parsed,
+      ...normalized,
       currentIndex: 0
     };
   }
 
-  return parsed;
+  return normalized;
 }
 
 export async function saveState(appHome: string, state: AppState): Promise<void> {
   const normalized = appStateSchema.parse({
     ...state,
     currentIndex: state.accounts.length === 0 ? null : state.currentIndex ?? 0,
+    lastSessionId: state.lastSessionId ?? null,
     updatedAt: new Date().toISOString()
   });
 

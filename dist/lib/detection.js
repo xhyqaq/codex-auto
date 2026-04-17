@@ -1,20 +1,17 @@
 import stripAnsi from 'strip-ansi';
 const quotaPatterns = [
-    /\busage limit exceeded\b/i,
-    /\busagelimitexceeded\b/i,
-    /\byou(?:'|’)ve hit your usage limit\b/i,
-    /\brate limit(?: reached| exceeded)?\b/i,
-    /\bquota exceeded\b/i,
-    /\blimit reached\b/i,
-    /额度.*耗尽/,
-    /没有额度/,
-    /超出.*限额/
+    /you(?:'|’)ve hit your usage limit\.\s+to get more access now,\s+send a request to your admin\.?(?:\s+or try again at [^\n]+\.?)?/i
 ];
+const promptPattern = /(^|\n)(?:›|>)(?:\s|$)/g;
 export function sanitizeTerminalOutput(output) {
     return stripAnsi(output)
         .replace(/\r/g, '\n')
         .replace(/[^\S\n]+/g, ' ')
         .replace(/\u0000/g, '');
+}
+export function hasPromptMarker(output) {
+    promptPattern.lastIndex = 0;
+    return promptPattern.test(sanitizeTerminalOutput(output));
 }
 export function hasQuotaError(output) {
     const normalized = sanitizeTerminalOutput(output);

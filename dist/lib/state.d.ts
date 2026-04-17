@@ -4,6 +4,7 @@ declare const appStateSchema: z.ZodObject<{
     accounts: z.ZodArray<z.ZodString>;
     currentIndex: z.ZodNullable<z.ZodNumber>;
     lastSuccessfulAccount: z.ZodNullable<z.ZodString>;
+    lastSessionId: z.ZodDefault<z.ZodNullable<z.ZodString>>;
     updatedAt: z.ZodString;
 }, z.core.$strip>;
 export type AppState = z.infer<typeof appStateSchema>;
