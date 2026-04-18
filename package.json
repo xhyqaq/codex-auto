@@ -1,6 +1,6 @@
 {
   "name": "codex-auto",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Automatic multi-account session runner for the OpenAI Codex CLI.",
   "license": "MIT",
   "repository": {
