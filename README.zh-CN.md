@@ -23,6 +23,7 @@
 - 交互模式保持接近日常终端里的 Codex 使用体验
 - 支持保存长期生效的默认起始账号
 - 命中额度限制后自动切到下一个账号
+- 列表中可显示仍在等待恢复额度的账号及其恢复时间
 - 优先用记录的 session id 恢复会话
 - session id 失效时回退到 `codex resume --last`
 - 恢复时自动补发 `Continue`
@@ -91,6 +92,8 @@ codex-auto add b
 ```bash
 codex-auto list
 ```
+
+如果某个账号仍在等待额度恢复，`codex-auto list` 会把 Codex 给出的恢复时间显示在该账号后面。
 
 启动受管会话：
 

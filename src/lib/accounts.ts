@@ -178,8 +178,16 @@ export function renderAccountList(state: AppState): string {
   return state.accounts
     .map((account, index) => {
       const marker = state.currentIndex === index ? '*' : ' ';
-      const defaultLabel = state.preferredAccountName === account ? ' (default)' : '';
-      return `${marker} ${account}${defaultLabel}`;
+      const labels: string[] = [];
+      const retryAvailability = state.retryAvailabilityByAccount?.[account];
+      if (state.preferredAccountName === account) {
+        labels.push('default');
+      }
+      if (retryAvailability) {
+        labels.push(`retry at ${retryAvailability.displayText}`);
+      }
+      const suffix = labels.length > 0 ? ` (${labels.join(', ')})` : '';
+      return `${marker} ${account}${suffix}`;
     })
     .join('\n');
 }

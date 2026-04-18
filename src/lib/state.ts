@@ -2,6 +2,11 @@ import { z } from 'zod';
 import { readTextIfExists, writeJsonAtomic } from './fs.js';
 import { statePath } from './paths.js';
 
+const retryAvailabilitySchema = z.object({
+  displayText: z.string(),
+  availableAt: z.string()
+});
+
 const appStateSchema = z.object({
   version: z.literal(1),
   accounts: z.array(z.string()),
@@ -9,10 +14,25 @@ const appStateSchema = z.object({
   preferredAccountName: z.string().nullable().default(null),
   lastSuccessfulAccount: z.string().nullable(),
   lastSessionId: z.string().nullable().default(null),
+  retryAvailabilityByAccount: z.record(z.string(), retryAvailabilitySchema).default({}),
   updatedAt: z.string()
 });
 
 export type AppState = z.infer<typeof appStateSchema>;
+export type RetryAvailability = z.infer<typeof retryAvailabilitySchema>;
+
+function normalizeRetryAvailability(
+  accounts: string[],
+  retryAvailabilityByAccount: Record<string, RetryAvailability>
+): Record<string, RetryAvailability> {
+  const now = Date.now();
+  return Object.fromEntries(
+    Object.entries(retryAvailabilityByAccount).filter(([account, availability]) => {
+      const parsedTime = Date.parse(availability.availableAt);
+      return accounts.includes(account) && Number.isFinite(parsedTime) && parsedTime > now;
+    })
+  );
+}
 
 export function createEmptyState(): AppState {
   return {
@@ -22,6 +42,7 @@ export function createEmptyState(): AppState {
     preferredAccountName: null,
     lastSuccessfulAccount: null,
     lastSessionId: null,
+    retryAvailabilityByAccount: {},
     updatedAt: new Date().toISOString()
   };
 }
@@ -39,7 +60,8 @@ export async function loadState(appHome: string): Promise<AppState> {
     return {
       ...normalized,
       currentIndex: null,
-      preferredAccountName: null
+      preferredAccountName: null,
+      retryAvailabilityByAccount: {}
     };
   }
 
@@ -55,7 +77,8 @@ export async function loadState(appHome: string): Promise<AppState> {
   return {
     ...normalized,
     currentIndex,
-    preferredAccountName
+    preferredAccountName,
+    retryAvailabilityByAccount: normalizeRetryAvailability(normalized.accounts, normalized.retryAvailabilityByAccount)
   };
 }
 
@@ -72,6 +95,10 @@ export async function saveState(appHome: string, state: AppState): Promise<void>
             ? state.preferredAccountName
             : state.accounts[0] ?? null,
     lastSessionId: state.lastSessionId ?? null,
+    retryAvailabilityByAccount: normalizeRetryAvailability(
+      state.accounts,
+      state.retryAvailabilityByAccount ?? {}
+    ),
     updatedAt: new Date().toISOString()
   });
 
@@ -88,6 +115,7 @@ export function removeAccountFromState(state: AppState, name: string): AppState 
       currentIndex: null,
       preferredAccountName: null,
       lastSuccessfulAccount: state.lastSuccessfulAccount === name ? null : state.lastSuccessfulAccount,
+      retryAvailabilityByAccount: {},
       updatedAt: new Date().toISOString()
     };
   }
@@ -112,6 +140,9 @@ export function removeAccountFromState(state: AppState, name: string): AppState 
           ? state.preferredAccountName
           : nextAccounts[0] ?? null,
     lastSuccessfulAccount: state.lastSuccessfulAccount === name ? null : state.lastSuccessfulAccount,
+    retryAvailabilityByAccount: Object.fromEntries(
+      Object.entries(state.retryAvailabilityByAccount ?? {}).filter(([account]) => account !== name)
+    ),
     updatedAt: new Date().toISOString()
   };
 }

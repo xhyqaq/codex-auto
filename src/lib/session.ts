@@ -5,13 +5,13 @@ import { spawn as spawnPty } from 'node-pty';
 import path from 'node:path';
 import { createSessionLogger } from './logger.js';
 import { buildCodexShellCommand, resolveCodexCommand } from './codex-bin.js';
-import { hasPromptMarker, hasQuotaError, sanitizeTerminalOutput } from './detection.js';
+import { extractQuotaRetryAvailability, hasPromptMarker, hasQuotaError, sanitizeTerminalOutput } from './detection.js';
 import { markAccountUsed } from './accounts.js';
 import { readTextIfExists } from './fs.js';
 import { accountAuthPath, instanceHome, resolveCodexHome } from './paths.js';
 import { getAccountByName, getCurrentAccount, getPreferredAccount, pickNextAccount } from './rotation.js';
 import { ensureAppLayout, cleanupInstanceOverlay, createInstanceOverlay } from './runtime.js';
-import { loadState, saveState } from './state.js';
+import { loadState, saveState, type RetryAvailability } from './state.js';
 
 type OutputLike = Writable & {
   columns?: number;
@@ -61,6 +61,7 @@ type InvocationResult = {
   exitCode: number;
   quotaError: boolean;
   output: string;
+  retryAvailability: RetryAvailability | null;
 };
 
 function canUseInteractiveTerminal(
@@ -287,7 +288,8 @@ async function launchInvocation(options: {
           resolve({
             exitCode: 1,
             quotaError: false,
-            output: error.message
+            output: error.message,
+            retryAvailability: null
           });
         });
 
@@ -295,7 +297,8 @@ async function launchInvocation(options: {
           resolve({
             exitCode: code ?? 1,
             quotaError: false,
-            output: ''
+            output: '',
+            retryAvailability: null
           });
         });
       });
@@ -346,7 +349,8 @@ async function launchInvocation(options: {
         resolve({
           exitCode,
           quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
-          output: sanitizedOutput
+          output: sanitizedOutput,
+          retryAvailability: quotaDetected ? extractQuotaRetryAvailability(sanitizedOutput) : null
         });
       });
     });
@@ -390,7 +394,8 @@ async function launchInvocation(options: {
       resolve({
         exitCode: 1,
         quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
-        output: `${sanitizedOutput}\n${error.message}`
+        output: `${sanitizedOutput}\n${error.message}`,
+        retryAvailability: quotaDetected ? extractQuotaRetryAvailability(sanitizedOutput) : null
       });
     });
 
@@ -398,7 +403,8 @@ async function launchInvocation(options: {
       resolve({
         exitCode: code ?? 1,
         quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
-        output: sanitizedOutput
+        output: sanitizedOutput,
+        retryAvailability: quotaDetected ? extractQuotaRetryAvailability(sanitizedOutput) : null
       });
     });
   });
@@ -495,6 +501,7 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
         latestState.currentIndex = current.index;
         latestState.lastSuccessfulAccount = current.name;
         latestState.lastSessionId = lastSessionId;
+        delete latestState.retryAvailabilityByAccount[current.name];
         await saveState(options.appHome, latestState);
         await markAccountUsed(options.appHome, current.name);
         await logger.log('exit', { account: current.name, exitCode: result.exitCode, instanceId });
@@ -509,6 +516,9 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
 
       exhausted.add(current.name);
       const latestState = await loadState(options.appHome);
+      if (result.retryAvailability) {
+        latestState.retryAvailabilityByAccount[current.name] = result.retryAvailability;
+      }
       const next = pickNextAccount(latestState.accounts, current.index, exhausted);
       await logger.log('quota_switch', {
         from: current.name,

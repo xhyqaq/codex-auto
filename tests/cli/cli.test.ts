@@ -31,6 +31,12 @@ describe('cli', () => {
         preferredAccountName: 'beta',
         lastSuccessfulAccount: 'alpha',
         lastSessionId: null,
+        retryAvailabilityByAccount: {
+          alpha: {
+            displayText: '11:10 PM',
+            availableAt: '2099-04-18T23:10:00.000Z'
+          }
+        },
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'alpha');
@@ -45,7 +51,7 @@ describe('cli', () => {
       });
 
       expect(exitCode).toBe(0);
-      expect(stdout.toString()).toContain('* alpha');
+      expect(stdout.toString()).toContain('* alpha (retry at 11:10 PM)');
       expect(stdout.toString()).toContain('  beta (default)');
     } finally {
       await cleanupTempDir(appHome);
@@ -159,6 +165,7 @@ describe('cli', () => {
         preferredAccountName: 'alpha',
         lastSuccessfulAccount: null,
         lastSessionId: null,
+        retryAvailabilityByAccount: {},
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'alpha', { account: 'a', token: 'a-token' });
@@ -206,6 +213,7 @@ describe('cli', () => {
         preferredAccountName: 'beta',
         lastSuccessfulAccount: null,
         lastSessionId: null,
+        retryAvailabilityByAccount: {},
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
@@ -244,6 +252,7 @@ describe('cli', () => {
         preferredAccountName: 'beta',
         lastSuccessfulAccount: null,
         lastSessionId: null,
+        retryAvailabilityByAccount: {},
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
@@ -288,6 +297,7 @@ describe('cli', () => {
         preferredAccountName: 'alpha',
         lastSuccessfulAccount: null,
         lastSessionId: null,
+        retryAvailabilityByAccount: {},
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'alpha', { account: 'a', token: 'a-token' });
@@ -331,6 +341,7 @@ describe('cli', () => {
         preferredAccountName: 'alpha',
         lastSuccessfulAccount: null,
         lastSessionId: null,
+        retryAvailabilityByAccount: {},
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'alpha');

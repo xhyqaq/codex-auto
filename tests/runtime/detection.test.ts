@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'vitest';
-import { hasQuotaError } from '../../src/lib/detection.js';
+import { describe, expect, test, vi } from 'vitest';
+import { extractQuotaRetryAvailability, hasQuotaError } from '../../src/lib/detection.js';
 
 describe('quota detection', () => {
   test('detects the observed codex quota exhaustion prompt', () => {
@@ -27,5 +27,35 @@ describe('quota detection', () => {
       )
     ).toBe(false);
     expect(hasQuotaError('network timeout while calling tool')).toBe(false);
+  });
+
+  test('extracts the retry time string and a comparable timestamp from quota text', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-18T08:00:00.000Z'));
+    try {
+      const result = extractQuotaRetryAvailability(
+        "■ You've hit your usage limit. To get more access now, send a request to your admin.\nor try again at 11:10 PM."
+      );
+
+      expect(result?.displayText).toBe('11:10 PM');
+      expect(result?.availableAt).toMatch(/2026-04-18T/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('rolls retry time to the next day when the same-day time has already passed', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-18T15:30:00.000Z'));
+    try {
+      const result = extractQuotaRetryAvailability(
+        "■ You've hit your usage limit. To get more access now, send a request to your admin.\nor try again at 11:10 PM."
+      );
+
+      expect(result?.displayText).toBe('11:10 PM');
+      expect(result?.availableAt).toMatch(/2026-04-19T/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

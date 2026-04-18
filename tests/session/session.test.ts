@@ -75,7 +75,12 @@ describe('managed session runner', () => {
       expect(await readFile(path.join(codexHome, 'session_index.jsonl'), 'utf8')).toContain('session-123');
       await expect(readdir(instancesRoot(appHome))).resolves.toEqual([]);
       await expect(loadState(appHome)).resolves.toMatchObject({
-        lastSessionId: 'session-123'
+        lastSessionId: 'session-123',
+        retryAvailabilityByAccount: {
+          a: {
+            displayText: '11:10 PM'
+          }
+        }
       });
     } finally {
       await cleanupTempDir(appHome);
@@ -421,7 +426,12 @@ process.exit(0);
       await expect(loadState(appHome)).resolves.toMatchObject({
         currentIndex: 1,
         preferredAccountName: 'a',
-        lastSuccessfulAccount: 'b'
+        lastSuccessfulAccount: 'b',
+        retryAvailabilityByAccount: {
+          a: {
+            displayText: '11:10 PM'
+          }
+        }
       });
     } finally {
       stdin.end();
@@ -470,6 +480,51 @@ process.exit(0);
         .map((line) => JSON.parse(line) as { authText: string });
       expect(records[0]?.authText).toContain('"account": "b"');
       expect(records[0]?.authText).not.toContain('"account": "a"');
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('successful runs clear stale retry availability for the account', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['b'],
+        currentIndex: 0,
+        preferredAccountName: 'b',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        retryAvailabilityByAccount: {
+          b: {
+            displayText: '11:10 PM',
+            availableAt: '2099-04-18T23:10:00.000Z'
+          }
+        },
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath
+        },
+        interactive: false
+      });
+
+      expect(result.exitCode).toBe(0);
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        retryAvailabilityByAccount: {}
+      });
     } finally {
       await cleanupTempDir(appHome);
       await cleanupTempDir(codexHome);

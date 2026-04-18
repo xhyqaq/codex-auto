@@ -23,6 +23,7 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 - Keep interactive Codex sessions usable in normal terminal workflows
 - Save a default start account for future runs
 - Automatically switch to the next account on rate limit
+- Show retry times for accounts that are still waiting for quota to reset
 - Resume sessions using recorded session IDs
 - Fall back to `codex resume --last` if the session ID is invalid
 - Automatically send `Continue` on resume
@@ -91,6 +92,8 @@ List accounts:
 ```bash
 codex-auto list
 ```
+
+When an account is still waiting for quota to reset, `codex-auto list` shows the retry time from Codex next to that account.
 
 Start a managed session:
 

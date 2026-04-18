@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { describe, expect, test } from 'vitest';
-import { addAccount, bootstrapDefaultAccount, removeAccount } from '../../src/lib/accounts.js';
+import { addAccount, bootstrapDefaultAccount, removeAccount, renderAccountList } from '../../src/lib/accounts.js';
 import { accountAuthPath, accountConfigPath } from '../../src/lib/paths.js';
 import { loadState, removeAccountFromState } from '../../src/lib/state.js';
 import { createTempAppHome, cleanupTempDir, fileExists, seedAccount, seedState } from '../helpers/temp.js';
@@ -177,6 +177,12 @@ describe('account lifecycle', () => {
         preferredAccountName: 'beta',
         lastSuccessfulAccount: 'beta',
         lastSessionId: null,
+        retryAvailabilityByAccount: {
+          beta: {
+            displayText: '11:10 PM',
+            availableAt: '2099-04-18T23:10:00.000Z'
+          }
+        },
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'alpha');
@@ -186,10 +192,32 @@ describe('account lifecycle', () => {
 
       await expect(loadState(appHome)).resolves.toMatchObject({
         accounts: ['alpha'],
-        preferredAccountName: 'alpha'
+        preferredAccountName: 'alpha',
+        retryAvailabilityByAccount: {}
       });
     } finally {
       await cleanupTempDir(appHome);
     }
+  });
+
+  test('renderAccountList shows retry availability alongside the default marker', () => {
+    const output = renderAccountList({
+      version: 1,
+      accounts: ['alpha', 'beta'],
+      currentIndex: 0,
+      preferredAccountName: 'alpha',
+      lastSuccessfulAccount: null,
+      lastSessionId: null,
+      retryAvailabilityByAccount: {
+        alpha: {
+          displayText: '11:10 PM',
+          availableAt: '2099-04-18T23:10:00.000Z'
+        }
+      },
+      updatedAt: '2026-04-18T00:00:00.000Z'
+    });
+
+    expect(output).toContain('* alpha (default, retry at 11:10 PM)');
+    expect(output).toContain('  beta');
   });
 });
