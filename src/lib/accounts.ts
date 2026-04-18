@@ -1,5 +1,5 @@
 import { ensureAccountConfig } from './account-config.js';
-import { copyFileAtomic, pathExists, removePathIfExists, writeJsonAtomic } from './fs.js';
+import { copyFileAtomic, pathExists, readTextIfExists, removePathIfExists, writeJsonAtomic } from './fs.js';
 import { runCodexLogin, resolveCodexCommand } from './codex-bin.js';
 import { accountAuthPath, accountConfigPath, accountHome, accountMetaPath } from './paths.js';
 import { loadState, removeAccountFromState, saveState, type AppState } from './state.js';
@@ -33,6 +33,12 @@ async function writeAccountMeta(appHome: string, name: string, partial: Partial<
   };
 
   await writeJsonAtomic(accountMetaPath(appHome, name), existing);
+}
+
+function ensurePreferredAccountForFirstEntry(state: AppState, name: string): void {
+  if (state.accounts.length === 1 && state.preferredAccountName === null) {
+    state.preferredAccountName = name;
+  }
 }
 
 function normalizeAddAccountOptions(options?: LoginRunner | AddAccountOptions): AddAccountOptions {
@@ -99,6 +105,7 @@ export async function addAccount(
     if (state.currentIndex === null) {
       state.currentIndex = 0;
     }
+    ensurePreferredAccountForFirstEntry(state, name);
     await saveState(appHome, state);
     await writeAccountMeta(appHome, name, { name });
   } catch (error) {
@@ -118,13 +125,62 @@ export async function removeAccount(appHome: string, name: string): Promise<void
   await saveState(appHome, removeAccountFromState(state, name));
 }
 
+export async function setPreferredAccount(appHome: string, name: string): Promise<void> {
+  await ensureAppLayout(appHome);
+  const state = await loadState(appHome);
+  if (!state.accounts.includes(name)) {
+    throw new Error(`Account "${name}" does not exist`);
+  }
+
+  state.preferredAccountName = name;
+  await saveState(appHome, state);
+}
+
+export async function bootstrapDefaultAccount(appHome: string, codexHome: string): Promise<boolean> {
+  await ensureAppLayout(appHome);
+  const state = await loadState(appHome);
+  if (state.accounts.length > 0) {
+    return false;
+  }
+
+  const sourceAuthPath = `${codexHome}/auth.json`;
+  const sourceConfigPath = `${codexHome}/config.toml`;
+  const authText = await readTextIfExists(sourceAuthPath);
+  if (!authText?.trim()) {
+    return false;
+  }
+
+  const targetHome = accountHome(appHome, 'default');
+  try {
+    await copyFileAtomic(sourceAuthPath, accountAuthPath(appHome, 'default'));
+    if (await pathExists(sourceConfigPath)) {
+      await copyFileAtomic(sourceConfigPath, accountConfigPath(appHome, 'default'));
+    }
+    await ensureAccountConfig(appHome, 'default');
+
+    state.accounts = ['default'];
+    state.currentIndex = 0;
+    state.preferredAccountName = 'default';
+    await saveState(appHome, state);
+    await writeAccountMeta(appHome, 'default', { name: 'default' });
+    return true;
+  } catch (error) {
+    await removePathIfExists(targetHome);
+    throw error;
+  }
+}
+
 export function renderAccountList(state: AppState): string {
   if (state.accounts.length === 0) {
     return 'No accounts configured. Use `codex-auto add <name>` first.';
   }
 
   return state.accounts
-    .map((account, index) => `${state.currentIndex === index ? '*' : ' '} ${account}`)
+    .map((account, index) => {
+      const marker = state.currentIndex === index ? '*' : ' ';
+      const defaultLabel = state.preferredAccountName === account ? ' (default)' : '';
+      return `${marker} ${account}${defaultLabel}`;
+    })
     .join('\n');
 }
 

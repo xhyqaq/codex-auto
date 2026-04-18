@@ -9,7 +9,7 @@ import { hasPromptMarker, hasQuotaError, sanitizeTerminalOutput } from './detect
 import { markAccountUsed } from './accounts.js';
 import { readTextIfExists } from './fs.js';
 import { accountAuthPath, instanceHome, resolveCodexHome } from './paths.js';
-import { getAccountByName, getCurrentAccount, pickNextAccount } from './rotation.js';
+import { getAccountByName, getCurrentAccount, getPreferredAccount, pickNextAccount } from './rotation.js';
 import { ensureAppLayout, cleanupInstanceOverlay, createInstanceOverlay } from './runtime.js';
 import { loadState, saveState } from './state.js';
 
@@ -429,7 +429,7 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
   const state = await loadState(options.appHome);
   let current = options.preferredAccountName
     ? getAccountByName(state, options.preferredAccountName)
-    : getCurrentAccount(state);
+    : getPreferredAccount(state) ?? getCurrentAccount(state);
   if (!current) {
     if (state.accounts.length === 0) {
       throw new Error('No accounts configured. Run `codex-auto add <name>` first.');

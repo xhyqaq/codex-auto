@@ -17,9 +17,11 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 
 - Manage multiple account configurations
 - Run `codex login` automatically when adding a new account
+- Bootstrap a `default` account from your existing Codex setup on first run
 - Import existing `auth.json` and `config.toml` files
 - Launch managed `codex` sessions
 - Keep interactive Codex sessions usable in normal terminal workflows
+- Save a default start account for future runs
 - Automatically switch to the next account on rate limit
 - Resume sessions using recorded session IDs
 - Fall back to `codex resume --last` if the session ID is invalid
@@ -69,7 +71,15 @@ npm link
 
 ## Quick Start
 
-Add accounts:
+Start a managed session right away:
+
+```bash
+codex-auto
+```
+
+On first run, if your source `CODEX_HOME` already has a usable login, `codex-auto` imports it as `default` automatically.
+
+Add more accounts:
 
 ```bash
 codex-auto add a
@@ -92,6 +102,12 @@ Start with a specific account:
 
 ```bash
 codex-auto --account b
+```
+
+Save a default start account for future runs:
+
+```bash
+codex-auto use b
 ```
 
 Start from a custom source `CODEX_HOME`:
@@ -128,6 +144,8 @@ codex-auto review
 ```
 
 All passthrough invocations retain multi-account rotation: if the current account hits a rate limit, `codex-auto` automatically switches to the next account and resumes.
+
+`--account <name>` is a one-run override. `codex-auto use <name>` changes the default start account for later runs.
 
 ## Importing Existing Configurations
 
@@ -181,7 +199,7 @@ Directory structure:
 
 - `accounts/<name>/` — per-account auth/config storage
 - `instances/<id>/` — per-run temporary overlay used as `CODEX_HOME`
-- `state.json` — account order, current index, last successful account, latest session ID
+- `state.json` — account order, current index, default start account, last successful account, latest session ID
 - `logs/` — session logs and terminal transcripts
 
 For each managed run, `codex-auto` creates `~/.codex-auto/instances/<id>/`, symlinks entries from the source `CODEX_HOME`, replaces only `auth.json` with a real copy from the selected account, launches `codex` with that overlay, then removes the overlay when the process exits. This keeps session history, plugins, MCP config, and other Codex state in the original home.
@@ -239,6 +257,7 @@ codex-auto --account a
 codex-auto add <name>
 codex-auto add <name> --auth /path/to/auth.json --config /path/to/config.toml
 codex-auto list
+codex-auto use <name>
 codex-auto remove <name>
 
 # Managed session (default)

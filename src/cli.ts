@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import type { Writable } from 'node:stream';
-import { addAccount, removeAccount, renderAccountList } from './lib/accounts.js';
+import { addAccount, bootstrapDefaultAccount, removeAccount, renderAccountList, setPreferredAccount } from './lib/accounts.js';
 import { runCodexLogin, resolveCodexCommand } from './lib/codex-bin.js';
 import { resolveAppHome, resolveCodexHome } from './lib/paths.js';
 import { loadState } from './lib/state.js';
@@ -61,7 +61,7 @@ export function extractManagedOptions(argv: string[]): {
   return { accountName, codexHome, rest };
 }
 
-const ownCommands = new Set(['add', 'remove', 'list']);
+const ownCommands = new Set(['add', 'remove', 'list', 'use']);
 
 export function isOwnCommand(rest: string[]): boolean {
   if (rest.includes('--help') || rest.includes('-h')) return true;
@@ -92,7 +92,11 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
   const selectedCodexHome = codexHome ?? defaultCodexHome;
 
   if (!isOwnCommand(rest)) {
-    const state = await loadState(appHome);
+    let state = await loadState(appHome);
+    if (state.accounts.length === 0) {
+      await bootstrapDefaultAccount(appHome, selectedCodexHome);
+      state = await loadState(appHome);
+    }
     if (state.accounts.length === 0) {
       stderr.write('No accounts configured. Run `codex-auto add <name>` first.\n');
       return 1;
@@ -134,6 +138,16 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
     stdout.write(`${renderAccountList(state)}\n`);
     exitCode = 0;
   });
+
+  program
+    .command('use')
+    .description('Set the default start account')
+    .argument('<name>')
+    .action(async (name: string) => {
+      await setPreferredAccount(appHome, name);
+      stdout.write(`Default start account set to ${name}\n`);
+      exitCode = 0;
+    });
 
   program
     .command('add')

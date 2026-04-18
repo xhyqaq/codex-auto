@@ -28,7 +28,9 @@ describe('cli', () => {
         version: 1,
         accounts: ['alpha', 'beta'],
         currentIndex: 0,
+        preferredAccountName: 'beta',
         lastSuccessfulAccount: 'alpha',
+        lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'alpha');
@@ -44,7 +46,7 @@ describe('cli', () => {
 
       expect(exitCode).toBe(0);
       expect(stdout.toString()).toContain('* alpha');
-      expect(stdout.toString()).toContain('  beta');
+      expect(stdout.toString()).toContain('  beta (default)');
     } finally {
       await cleanupTempDir(appHome);
     }
@@ -52,10 +54,12 @@ describe('cli', () => {
 
   test('empty managed run tells the user to add an account first', async () => {
     const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
     const stdout = new CaptureStream();
     try {
       const exitCode = await runCli([], {
         appHome,
+        codexHome,
         stdout,
         stderr: stdout,
         stdin: process.stdin,
@@ -66,6 +70,49 @@ describe('cli', () => {
       expect(stdout.toString()).toContain('codex-auto add <name>');
     } finally {
       await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('empty managed run bootstraps default from source CODEX_HOME when auth exists', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    const stdout = new CaptureStream();
+    try {
+      await mkdir(path.join(codexHome, 'sessions'), { recursive: true });
+      await writeFile(path.join(codexHome, 'auth.json'), JSON.stringify({ account: 'default', token: 'seed-token' }, null, 2), 'utf8');
+      await writeFile(path.join(codexHome, 'config.toml'), 'model = "gpt-5.4"\n', 'utf8');
+      await writeFile(path.join(codexHome, 'session_index.jsonl'), '', 'utf8');
+
+      const exitCode = await runCli([], {
+        appHome,
+        codexHome,
+        stdout,
+        stderr: stdout,
+        stdin: process.stdin,
+        interactive: false,
+        env: {
+          ...process.env,
+          CODEX_AUTO_CODEX_BIN: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+          FAKE_CODEX_LOG: logPath
+        }
+      });
+
+      expect(exitCode).toBe(0);
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        accounts: ['default'],
+        preferredAccountName: 'default'
+      });
+      const records = (await readFile(logPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { authText: string });
+      expect(records[0]?.authText).toContain('seed-token');
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
     }
   });
 
@@ -109,7 +156,9 @@ describe('cli', () => {
         version: 1,
         accounts: ['alpha', 'beta'],
         currentIndex: 0,
+        preferredAccountName: 'alpha',
         lastSuccessfulAccount: null,
+        lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'alpha', { account: 'a', token: 'a-token' });
@@ -154,7 +203,9 @@ describe('cli', () => {
         version: 1,
         accounts: ['beta'],
         currentIndex: 0,
+        preferredAccountName: 'beta',
         lastSuccessfulAccount: null,
+        lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
@@ -190,7 +241,9 @@ describe('cli', () => {
         version: 1,
         accounts: ['beta'],
         currentIndex: 0,
+        preferredAccountName: 'beta',
         lastSuccessfulAccount: null,
+        lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
@@ -232,7 +285,9 @@ describe('cli', () => {
         version: 1,
         accounts: ['alpha', 'beta'],
         currentIndex: 0,
+        preferredAccountName: 'alpha',
         lastSuccessfulAccount: null,
+        lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
       });
       await seedAccount(appHome, 'alpha', { account: 'a', token: 'a-token' });
@@ -260,6 +315,40 @@ describe('cli', () => {
       expect(records[0]?.authText).toContain('"account": "b"');
       expect(records[0]?.args).toContain('--full-auto');
       expect(records[0]?.args).toContain('refactor');
+    } finally {
+      await cleanupTempDir(appHome);
+    }
+  });
+
+  test('use command persists the preferred account', async () => {
+    const appHome = await createTempAppHome();
+    const stdout = new CaptureStream();
+    try {
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['alpha', 'beta'],
+        currentIndex: 0,
+        preferredAccountName: 'alpha',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'alpha');
+      await seedAccount(appHome, 'beta');
+
+      const exitCode = await runCli(['use', 'beta'], {
+        appHome,
+        stdout,
+        stderr: stdout,
+        stdin: process.stdin,
+        interactive: false
+      });
+
+      expect(exitCode).toBe(0);
+      expect(stdout.toString()).toContain('Default start account set to beta');
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        preferredAccountName: 'beta'
+      });
     } finally {
       await cleanupTempDir(appHome);
     }

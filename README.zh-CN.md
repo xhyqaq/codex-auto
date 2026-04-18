@@ -17,9 +17,11 @@
 
 - 管理多套账号配置
 - 首次添加账号时直接跑 `codex login`
+- 首次运行时可从现有 Codex 登录态自动引导 `default` 账号
 - 支持导入现成的 `auth.json` 和 `config.toml`
 - 启动受管 `codex` 会话
 - 交互模式保持接近日常终端里的 Codex 使用体验
+- 支持保存长期生效的默认起始账号
 - 命中额度限制后自动切到下一个账号
 - 优先用记录的 session id 恢复会话
 - session id 失效时回退到 `codex resume --last`
@@ -69,7 +71,15 @@ npm link
 
 ## 快速开始
 
-添加账号：
+直接启动受管会话：
+
+```bash
+codex-auto
+```
+
+第一次运行时，如果源 `CODEX_HOME` 里已经有可用登录态，`codex-auto` 会自动把它导入为 `default` 账号。
+
+继续添加更多账号：
 
 ```bash
 codex-auto add a
@@ -92,6 +102,12 @@ codex-auto
 
 ```bash
 codex-auto --account b
+```
+
+设置之后默认优先使用的账号：
+
+```bash
+codex-auto use b
 ```
 
 使用自定义原始 `CODEX_HOME` 启动：
@@ -128,6 +144,8 @@ codex-auto review
 ```
 
 所有透传调用都保留多账号轮转能力：当前账号命中额度限制时，自动切到下一个账号并恢复。
+
+`--account <name>` 只影响当前这一次运行；`codex-auto use <name>` 会修改后续默认启动时优先使用的账号。
 
 ## 导入已有配置
 
@@ -183,7 +201,7 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 
 - `accounts/<name>/` 保存每个账号自己的认证与配置
 - `instances/<id>/` 是每次运行临时创建的 overlay `CODEX_HOME`
-- `state.json` 保存账号顺序、当前索引、上次成功账号、最近 session id
+- `state.json` 保存账号顺序、当前索引、默认起始账号、上次成功账号、最近 session id
 - `logs/` 保存会话日志和终端 transcript
 
 每次受管运行时，`codex-auto` 都会创建 `~/.codex-auto/instances/<id>/`，把原始 `CODEX_HOME` 中的条目符号链接进去，只把 `auth.json` 替换成当前账号的真实副本，然后用这个 overlay 启动 `codex`。进程退出后 overlay 会被清理，因此会话历史、插件、MCP 配置等仍然保留在原始 home 里。
@@ -241,6 +259,7 @@ codex-auto --account a
 codex-auto add <name>
 codex-auto add <name> --auth /path/to/auth.json --config /path/to/config.toml
 codex-auto list
+codex-auto use <name>
 codex-auto remove <name>
 
 # 受管会话（默认）

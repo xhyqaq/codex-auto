@@ -6,6 +6,7 @@ const appStateSchema = z.object({
   version: z.literal(1),
   accounts: z.array(z.string()),
   currentIndex: z.number().int().nonnegative().nullable(),
+  preferredAccountName: z.string().nullable().default(null),
   lastSuccessfulAccount: z.string().nullable(),
   lastSessionId: z.string().nullable().default(null),
   updatedAt: z.string()
@@ -18,6 +19,7 @@ export function createEmptyState(): AppState {
     version: 1,
     accounts: [],
     currentIndex: null,
+    preferredAccountName: null,
     lastSuccessfulAccount: null,
     lastSessionId: null,
     updatedAt: new Date().toISOString()
@@ -36,24 +38,39 @@ export async function loadState(appHome: string): Promise<AppState> {
   if (normalized.accounts.length === 0) {
     return {
       ...normalized,
-      currentIndex: null
+      currentIndex: null,
+      preferredAccountName: null
     };
   }
 
-  if (normalized.currentIndex === null || normalized.currentIndex >= normalized.accounts.length) {
-    return {
-      ...normalized,
-      currentIndex: 0
-    };
-  }
+  const currentIndex =
+    normalized.currentIndex === null || normalized.currentIndex >= normalized.accounts.length ? 0 : normalized.currentIndex;
+  const preferredAccountName =
+    normalized.preferredAccountName === null
+      ? null
+      : normalized.accounts.includes(normalized.preferredAccountName)
+        ? normalized.preferredAccountName
+        : normalized.accounts[0] ?? null;
 
-  return normalized;
+  return {
+    ...normalized,
+    currentIndex,
+    preferredAccountName
+  };
 }
 
 export async function saveState(appHome: string, state: AppState): Promise<void> {
   const normalized = appStateSchema.parse({
     ...state,
     currentIndex: state.accounts.length === 0 ? null : state.currentIndex ?? 0,
+    preferredAccountName:
+      state.accounts.length === 0
+        ? null
+        : state.preferredAccountName === null
+          ? null
+          : state.accounts.includes(state.preferredAccountName)
+            ? state.preferredAccountName
+            : state.accounts[0] ?? null,
     lastSessionId: state.lastSessionId ?? null,
     updatedAt: new Date().toISOString()
   });
@@ -69,6 +86,7 @@ export function removeAccountFromState(state: AppState, name: string): AppState 
       ...state,
       accounts: [],
       currentIndex: null,
+      preferredAccountName: null,
       lastSuccessfulAccount: state.lastSuccessfulAccount === name ? null : state.lastSuccessfulAccount,
       updatedAt: new Date().toISOString()
     };
@@ -87,6 +105,12 @@ export function removeAccountFromState(state: AppState, name: string): AppState 
     ...state,
     accounts: nextAccounts,
     currentIndex: nextIndex,
+    preferredAccountName:
+      state.preferredAccountName === name
+        ? nextAccounts[0] ?? null
+        : state.preferredAccountName && nextAccounts.includes(state.preferredAccountName)
+          ? state.preferredAccountName
+          : nextAccounts[0] ?? null,
     lastSuccessfulAccount: state.lastSuccessfulAccount === name ? null : state.lastSuccessfulAccount,
     updatedAt: new Date().toISOString()
   };

@@ -29,6 +29,14 @@ export function getAccountByName(state: AppState, accountName: string): AccountS
   };
 }
 
+export function getPreferredAccount(state: AppState): AccountSelection | null {
+  if (!state.preferredAccountName) {
+    return null;
+  }
+
+  return getAccountByName(state, state.preferredAccountName);
+}
+
 export function pickNextAccount(
   accounts: string[],
   currentIndex: number,

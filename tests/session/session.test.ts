@@ -46,6 +46,7 @@ describe('managed session runner', () => {
         version: 1,
         accounts: ['a', 'b'],
         currentIndex: 0,
+        preferredAccountName: 'a',
         lastSuccessfulAccount: null,
         lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
@@ -92,6 +93,7 @@ describe('managed session runner', () => {
         version: 1,
         accounts: ['a', 'b'],
         currentIndex: 0,
+        preferredAccountName: 'a',
         lastSuccessfulAccount: null,
         lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
@@ -138,6 +140,7 @@ describe('managed session runner', () => {
         version: 1,
         accounts: ['a', 'b'],
         currentIndex: 0,
+        preferredAccountName: 'a',
         lastSuccessfulAccount: null,
         lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
@@ -181,6 +184,7 @@ describe('managed session runner', () => {
         version: 1,
         accounts: ['a', 'b'],
         currentIndex: 0,
+        preferredAccountName: 'a',
         lastSuccessfulAccount: null,
         lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
@@ -226,6 +230,7 @@ describe('managed session runner', () => {
         version: 1,
         accounts: ['a', 'b'],
         currentIndex: 0,
+        preferredAccountName: 'a',
         lastSuccessfulAccount: null,
         lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
@@ -273,6 +278,7 @@ describe('managed session runner', () => {
         version: 1,
         accounts: ['a', 'b'],
         currentIndex: 0,
+        preferredAccountName: 'a',
         lastSuccessfulAccount: null,
         lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
@@ -335,6 +341,7 @@ process.exit(0);
         version: 1,
         accounts: ['b'],
         currentIndex: 0,
+        preferredAccountName: 'b',
         lastSuccessfulAccount: null,
         lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
@@ -381,6 +388,7 @@ process.exit(0);
         version: 1,
         accounts: ['a', 'b'],
         currentIndex: 0,
+        preferredAccountName: 'a',
         lastSuccessfulAccount: null,
         lastSessionId: null,
         updatedAt: '2026-04-17T00:00:00.000Z'
@@ -410,8 +418,59 @@ process.exit(0);
       await expect(readFile(logPath, 'utf8')).resolves.toContain(
         '"args":["resume","--no-alt-screen","interactive-session","Continue"]'
       );
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        currentIndex: 1,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: 'b'
+      });
     } finally {
       stdin.end();
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('starts from preferredAccountName when no per-run override is given', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'b',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath
+        },
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(0);
+      expect(result.finalAccount).toBe('b');
+
+      const records = (await readFile(logPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { authText: string });
+      expect(records[0]?.authText).toContain('"account": "b"');
+      expect(records[0]?.authText).not.toContain('"account": "a"');
+    } finally {
       await cleanupTempDir(appHome);
       await cleanupTempDir(codexHome);
     }
