@@ -23,6 +23,7 @@ export type RunManagedSessionOptions = {
   appHome: string;
   workspaceDir: string;
   preferredAccountName?: string;
+  extraArgs?: string[];
   codexCommand?: string;
   env?: NodeJS.ProcessEnv;
   stdin?: NodeJS.ReadStream;
@@ -30,6 +31,23 @@ export type RunManagedSessionOptions = {
   stderr?: OutputLike;
   interactive?: boolean;
 };
+
+const nonInteractiveSubcommands = new Set([
+  'exec', 'e', 'review', 'login', 'logout', 'mcp', 'marketplace',
+  'mcp-server', 'app-server', 'app', 'completion', 'sandbox', 'debug',
+  'apply', 'a', 'cloud', 'exec-server', 'features', 'help'
+]);
+
+function buildFirstRunArgs(extraArgs: string[]): string[] {
+  const args = [...extraArgs];
+  if (!args.includes('--no-alt-screen')) {
+    const firstPositional = args.find((a) => !a.startsWith('-'));
+    if (!firstPositional || !nonInteractiveSubcommands.has(firstPositional)) {
+      args.push('--no-alt-screen');
+    }
+  }
+  return args;
+}
 
 export type RunManagedSessionResult = {
   finalAccount: string;
@@ -387,12 +405,14 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
         sessionId: firstRun ? null : lastSessionId
       });
 
+      const firstRunArgs = buildFirstRunArgs(options.extraArgs ?? []);
+
       const result = firstRun
         ? await launchInvocation({
             appHome: options.appHome,
             workspaceDir: options.workspaceDir,
             codexCommand,
-            args: ['--no-alt-screen'],
+            args: firstRunArgs,
             env,
             stdin,
             stdout,

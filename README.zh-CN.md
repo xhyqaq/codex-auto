@@ -23,6 +23,7 @@
 - session id 失效时回退到 `codex resume --last`
 - 恢复时自动补发 `Continue`
 - 记录运行日志和状态文件
+- 透传所有 `codex` 原始参数和子命令（如 `exec`、`review`、`--model`、`--full-auto`）
 
 ## 前置要求
 
@@ -96,6 +97,29 @@ codex-auto --account b
 ```bash
 codex-auto remove b
 ```
+
+## 透传 codex 参数
+
+除了 `codex-auto` 自身的命令（`add`、`remove`、`list`），其余参数全部原样转发给 `codex`：
+
+```bash
+# 传入 prompt
+codex-auto "修复登录 bug"
+
+# 指定模型
+codex-auto --model o3 "重构 auth 模块"
+
+# 非交互 exec 模式
+codex-auto exec "添加单元测试"
+
+# 指定账号 + full-auto
+codex-auto --account b --full-auto "迁移到 TypeScript"
+
+# 代码审查
+codex-auto review
+```
+
+所有透传调用都保留多账号轮转能力：当前账号命中额度限制时，自动切到下一个账号并恢复。
 
 ## 导入已有配置
 
@@ -190,12 +214,19 @@ codex-auto --account a
 ## 常用命令
 
 ```bash
+# 账号管理（codex-auto 自身命令）
 codex-auto add <name>
 codex-auto add <name> --auth /path/to/auth.json --config /path/to/config.toml
 codex-auto list
 codex-auto remove <name>
-codex-auto --account <name>
+
+# 受管会话（默认）
 codex-auto
+codex-auto --account <name>
+
+# 透传给 codex（其余所有参数）
+codex-auto [任意 codex 参数...]
+codex-auto --account <name> [任意 codex 参数...]
 ```
 
 ## 开发

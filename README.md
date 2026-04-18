@@ -23,6 +23,7 @@ It maintains multiple isolated `CODEX_HOME` directories and automatically rotate
 - Fall back to `codex resume --last` if the session ID is invalid
 - Automatically send `Continue` on resume
 - Log sessions and terminal transcripts
+- Pass through all `codex` arguments and subcommands (e.g. `exec`, `review`, `--model`, `--full-auto`)
 
 ## Prerequisites
 
@@ -96,6 +97,29 @@ Remove an account:
 ```bash
 codex-auto remove b
 ```
+
+## Passing Through Codex Arguments
+
+Any arguments not recognized as `codex-auto` own commands (`add`, `remove`, `list`) are forwarded directly to `codex`:
+
+```bash
+# Pass a prompt
+codex-auto "fix the login bug"
+
+# Use a specific model
+codex-auto --model o3 "refactor the auth module"
+
+# Non-interactive exec mode
+codex-auto exec "add unit tests"
+
+# Full-auto with a specific account
+codex-auto --account b --full-auto "migrate to TypeScript"
+
+# Code review
+codex-auto review
+```
+
+All passthrough invocations retain multi-account rotation: if the current account hits a rate limit, `codex-auto` automatically switches to the next account and resumes.
 
 ## Importing Existing Configurations
 
@@ -188,12 +212,19 @@ codex-auto --account a
 ## Command Reference
 
 ```bash
+# Account management (codex-auto own commands)
 codex-auto add <name>
 codex-auto add <name> --auth /path/to/auth.json --config /path/to/config.toml
 codex-auto list
 codex-auto remove <name>
-codex-auto --account <name>
+
+# Managed session (default)
 codex-auto
+codex-auto --account <name>
+
+# Passthrough to codex (all other arguments)
+codex-auto [any codex arguments...]
+codex-auto --account <name> [any codex arguments...]
 ```
 
 ## Development

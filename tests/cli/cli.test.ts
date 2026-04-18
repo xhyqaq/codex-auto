@@ -2,7 +2,7 @@ import { Writable } from 'node:stream';
 import path from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { describe, expect, test } from 'vitest';
-import { runCli } from '../../src/cli.js';
+import { runCli, extractAccountOption, isOwnCommand } from '../../src/cli.js';
 import { loadState } from '../../src/lib/state.js';
 import { cleanupTempDir, createTempAppHome, seedAccount, seedState } from '../helpers/temp.js';
 
@@ -141,6 +141,131 @@ describe('cli', () => {
     }
   });
 
+  test('passthrough forwards extra args to codex', async () => {
+    const appHome = await createTempAppHome();
+    const logPath = path.join(appHome, 'fake-codex.log');
+    const stdout = new CaptureStream();
+    try {
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['beta'],
+        currentIndex: 0,
+        lastSuccessfulAccount: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
+
+      const exitCode = await runCli(['--model', 'o3', 'fix the bug'], {
+        appHome,
+        stdout,
+        stderr: stdout,
+        stdin: process.stdin,
+        interactive: false,
+        env: {
+          ...process.env,
+          CODEX_AUTO_CODEX_BIN: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+          FAKE_CODEX_LOG: logPath
+        }
+      });
+
+      expect(exitCode).toBe(0);
+      const records = (await readFile(logPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { args: string[] });
+      expect(records[0]?.args).toContain('--model');
+      expect(records[0]?.args).toContain('o3');
+      expect(records[0]?.args).toContain('fix the bug');
+      expect(records[0]?.args).toContain('--no-alt-screen');
+    } finally {
+      await cleanupTempDir(appHome);
+    }
+  });
+
+  test('passthrough with --account forwards remaining args to codex', async () => {
+    const appHome = await createTempAppHome();
+    const logPath = path.join(appHome, 'fake-codex.log');
+    const stdout = new CaptureStream();
+    try {
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['alpha', 'beta'],
+        currentIndex: 0,
+        lastSuccessfulAccount: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'alpha', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
+
+      const exitCode = await runCli(['--account', 'beta', '--full-auto', 'refactor'], {
+        appHome,
+        stdout,
+        stderr: stdout,
+        stdin: process.stdin,
+        interactive: false,
+        env: {
+          ...process.env,
+          CODEX_AUTO_CODEX_BIN: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+          FAKE_CODEX_LOG: logPath
+        }
+      });
+
+      expect(exitCode).toBe(0);
+      const records = (await readFile(logPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { args: string[]; authText: string });
+      expect(records[0]?.authText).toContain('"account": "b"');
+      expect(records[0]?.args).toContain('--full-auto');
+      expect(records[0]?.args).toContain('refactor');
+    } finally {
+      await cleanupTempDir(appHome);
+    }
+  });
+
+  test('passthrough does not add --no-alt-screen for exec subcommand', async () => {
+    const appHome = await createTempAppHome();
+    const logPath = path.join(appHome, 'fake-codex.log');
+    const stdout = new CaptureStream();
+    try {
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['beta'],
+        currentIndex: 0,
+        lastSuccessfulAccount: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
+
+      const exitCode = await runCli(['exec', 'fix the bug'], {
+        appHome,
+        stdout,
+        stderr: stdout,
+        stdin: process.stdin,
+        interactive: false,
+        env: {
+          ...process.env,
+          CODEX_AUTO_CODEX_BIN: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+          FAKE_CODEX_LOG: logPath
+        }
+      });
+
+      expect(exitCode).toBe(0);
+      const records = (await readFile(logPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { args: string[] });
+      expect(records[0]?.args).toContain('exec');
+      expect(records[0]?.args).toContain('fix the bug');
+      expect(records[0]?.args).not.toContain('--no-alt-screen');
+    } finally {
+      await cleanupTempDir(appHome);
+    }
+  });
+
   test('managed run auto-falls back to non-interactive mode when stdio is not a tty', async () => {
     const appHome = await createTempAppHome();
     const logPath = path.join(appHome, 'fake-codex.log');
@@ -178,5 +303,70 @@ describe('cli', () => {
     } finally {
       await cleanupTempDir(appHome);
     }
+  });
+});
+
+describe('extractAccountOption', () => {
+  test('extracts --account and returns the rest', () => {
+    const result = extractAccountOption(['--account', 'beta', '--model', 'o3', 'fix bug']);
+    expect(result.accountName).toBe('beta');
+    expect(result.rest).toEqual(['--model', 'o3', 'fix bug']);
+  });
+
+  test('returns undefined accountName when --account is absent', () => {
+    const result = extractAccountOption(['exec', 'fix bug']);
+    expect(result.accountName).toBeUndefined();
+    expect(result.rest).toEqual(['exec', 'fix bug']);
+  });
+
+  test('handles empty argv', () => {
+    const result = extractAccountOption([]);
+    expect(result.accountName).toBeUndefined();
+    expect(result.rest).toEqual([]);
+  });
+
+  test('handles --account at the end without a value', () => {
+    const result = extractAccountOption(['exec', '--account']);
+    expect(result.accountName).toBeUndefined();
+    expect(result.rest).toEqual(['exec', '--account']);
+  });
+});
+
+describe('isOwnCommand', () => {
+  test('recognizes add as own command', () => {
+    expect(isOwnCommand(['add', 'myaccount'])).toBe(true);
+  });
+
+  test('recognizes remove as own command', () => {
+    expect(isOwnCommand(['remove', 'myaccount'])).toBe(true);
+  });
+
+  test('recognizes list as own command', () => {
+    expect(isOwnCommand(['list'])).toBe(true);
+  });
+
+  test('recognizes --help as own command', () => {
+    expect(isOwnCommand(['--help'])).toBe(true);
+  });
+
+  test('recognizes -h as own command', () => {
+    expect(isOwnCommand(['-h'])).toBe(true);
+  });
+
+  test('treats empty args as passthrough', () => {
+    expect(isOwnCommand([])).toBe(false);
+  });
+
+  test('treats codex subcommands as passthrough', () => {
+    expect(isOwnCommand(['exec', 'fix bug'])).toBe(false);
+    expect(isOwnCommand(['review'])).toBe(false);
+  });
+
+  test('treats prompt-only args as passthrough', () => {
+    expect(isOwnCommand(['fix the login bug'])).toBe(false);
+  });
+
+  test('treats codex options as passthrough', () => {
+    expect(isOwnCommand(['--model', 'o3', '--full-auto'])).toBe(false);
   });
 });
