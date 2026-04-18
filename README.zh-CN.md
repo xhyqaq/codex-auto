@@ -4,7 +4,7 @@
 
 `codex-auto` 是一个给 `codex` CLI 用的多账号切换器。
 
-它把账号认证保存在 `~/.codex-auto/accounts/`，运行时基于你原始的 `CODEX_HOME` 创建临时 symlink overlay；当前账号命中额度限制时，会自动切到下一个账号并继续恢复会话。
+它把账号认证保存在 `~/.codex-auto/accounts/`，基于你现有的 Codex 使用方式启动受管会话；当前账号命中额度限制时，会自动切到下一个账号并继续恢复会话。
 
 ## 适用场景
 
@@ -19,7 +19,7 @@
 - 首次添加账号时直接跑 `codex login`
 - 支持导入现成的 `auth.json` 和 `config.toml`
 - 启动受管 `codex` 会话
-- 交互模式使用原生 PTY 终端托管，兼顾正常终端渲染和自动切号能力
+- 交互模式保持接近日常终端里的 Codex 使用体验
 - 命中额度限制后自动切到下一个账号
 - 优先用记录的 session id 恢复会话
 - session id 失效时回退到 `codex resume --last`
@@ -188,7 +188,7 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 
 每次受管运行时，`codex-auto` 都会创建 `~/.codex-auto/instances/<id>/`，把原始 `CODEX_HOME` 中的条目符号链接进去，只把 `auth.json` 替换成当前账号的真实副本，然后用这个 overlay 启动 `codex`。进程退出后 overlay 会被清理，因此会话历史、插件、MCP 配置等仍然保留在原始 home 里。
 
-交互式会话通过原生 PTY 终端托管启动，因此 Codex 的终端界面可以正常渲染，同时 `codex-auto` 仍然能够监控输出并在额度触发时自动切号、恢复会话。
+交互式会话会尽量保持你平时使用 Codex 时的终端体验，包括全屏和分屏场景；同时 `codex-auto` 仍然会在后台监控输出并在额度触发时自动切号、恢复会话。
 
 ## 切号与恢复逻辑
 

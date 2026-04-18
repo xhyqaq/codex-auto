@@ -4,7 +4,7 @@ English | [中文](./README.zh-CN.md)
 
 A multi-account switcher for the `codex` CLI.
 
-It keeps account auth under `~/.codex-auto/accounts/`, builds a temporary symlink overlay on top of your original `CODEX_HOME`, and automatically rotates to the next account when the current one hits a rate limit.
+It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessions on top of your existing setup, and automatically rotates to the next account when the current one hits a rate limit.
 
 ## Use Cases
 
@@ -19,7 +19,7 @@ It keeps account auth under `~/.codex-auto/accounts/`, builds a temporary symlin
 - Run `codex login` automatically when adding a new account
 - Import existing `auth.json` and `config.toml` files
 - Launch managed `codex` sessions
-- Use a native PTY-backed interactive terminal path for reliable full-screen and split-pane terminal sessions
+- Keep interactive Codex sessions usable in normal terminal workflows
 - Automatically switch to the next account on rate limit
 - Resume sessions using recorded session IDs
 - Fall back to `codex resume --last` if the session ID is invalid
@@ -186,7 +186,7 @@ Directory structure:
 
 For each managed run, `codex-auto` creates `~/.codex-auto/instances/<id>/`, symlinks entries from the source `CODEX_HOME`, replaces only `auth.json` with a real copy from the selected account, launches `codex` with that overlay, then removes the overlay when the process exits. This keeps session history, plugins, MCP config, and other Codex state in the original home.
 
-Interactive sessions are launched through a native PTY-backed terminal path so Codex can render its full terminal UI correctly while `codex-auto` still monitors output for automatic account rotation and session recovery.
+Interactive sessions keep the standard Codex terminal experience, including full-screen and split-pane workflows, while `codex-auto` continues automatic account rotation and session recovery in the background.
 
 ## Account Switching & Session Recovery
 
