@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import type { Writable } from 'node:stream';
 import { addAccount, removeAccount, renderAccountList } from './lib/accounts.js';
 import { runCodexLogin, resolveCodexCommand } from './lib/codex-bin.js';
-import { resolveAppHome } from './lib/paths.js';
+import { resolveAppHome, resolveCodexHome } from './lib/paths.js';
 import { loadState } from './lib/state.js';
 import { ensureAppLayout } from './lib/runtime.js';
 import { runManagedSession } from './lib/session.js';
@@ -15,6 +15,7 @@ type OutputLike = Writable & {
 
 export type CliRunOptions = {
   appHome?: string;
+  codexHome?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   stdin?: NodeJS.ReadStream;
@@ -32,19 +33,32 @@ function canUseInteractiveTerminal(
 }
 
 export function extractAccountOption(argv: string[]): { accountName: string | undefined; rest: string[] } {
+  const { accountName, rest } = extractManagedOptions(argv);
+  return { accountName, rest };
+}
+
+export function extractManagedOptions(argv: string[]): {
+  accountName: string | undefined;
+  codexHome: string | undefined;
+  rest: string[];
+} {
   const rest: string[] = [];
   let accountName: string | undefined;
+  let codexHome: string | undefined;
   let i = 0;
   while (i < argv.length) {
     if (argv[i] === '--account' && i + 1 < argv.length) {
       accountName = argv[i + 1];
+      i += 2;
+    } else if (argv[i] === '--codex-home' && i + 1 < argv.length) {
+      codexHome = argv[i + 1];
       i += 2;
     } else {
       rest.push(argv[i]!);
       i += 1;
     }
   }
-  return { accountName, rest };
+  return { accountName, codexHome, rest };
 }
 
 const ownCommands = new Set(['add', 'remove', 'list']);
@@ -63,6 +77,7 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
     ...options.env
   };
   const appHome = options.appHome ?? resolveAppHome(env);
+  const defaultCodexHome = options.codexHome ?? resolveCodexHome(env);
   const cwd = options.cwd ?? process.cwd();
   const stdout = options.stdout ?? (process.stdout as OutputLike);
   const stderr = options.stderr ?? (process.stderr as OutputLike);
@@ -73,7 +88,8 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
 
   await ensureAppLayout(appHome);
 
-  const { accountName, rest } = extractAccountOption(argv);
+  const { accountName, codexHome, rest } = extractManagedOptions(argv);
+  const selectedCodexHome = codexHome ?? defaultCodexHome;
 
   if (!isOwnCommand(rest)) {
     const state = await loadState(appHome);
@@ -84,6 +100,7 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
 
     const result = await runManagedSession({
       appHome,
+      codexHome: selectedCodexHome,
       workspaceDir: cwd,
       preferredAccountName: accountName,
       extraArgs: rest,
@@ -104,6 +121,7 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
     .name('codex-auto')
     .description('Multi-account switcher for the codex CLI.\nAll unrecognized arguments are forwarded to codex.')
     .option('--account <name>', 'Start this run from a specific account')
+    .option('--codex-home <path>', 'Use a specific source CODEX_HOME as the overlay base')
     .showHelpAfterError()
     .configureOutput({
       writeOut: (message) => stdout.write(message),

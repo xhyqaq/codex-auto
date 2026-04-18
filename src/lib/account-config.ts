@@ -44,8 +44,3 @@ export async function ensureAccountConfig(appHome: string, accountName: string):
   await writeTextAtomic(filePath, renderToml(merged));
   return merged;
 }
-
-export async function buildRuntimeConfig(appHome: string, accountName: string): Promise<string> {
-  const accountConfig = await ensureAccountConfig(appHome, accountName);
-  return renderToml(mergeTomlObjects(minimumAccountConfig, accountConfig));
-}

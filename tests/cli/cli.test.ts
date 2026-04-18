@@ -1,6 +1,6 @@
 import { Writable } from 'node:stream';
 import path from 'node:path';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { describe, expect, test } from 'vitest';
 import { runCli, extractAccountOption, isOwnCommand } from '../../src/cli.js';
 import { loadState } from '../../src/lib/state.js';
@@ -138,6 +138,46 @@ describe('cli', () => {
       expect(records[0]?.authText).toContain('"account": "b"');
     } finally {
       await cleanupTempDir(appHome);
+    }
+  });
+
+  test('managed run accepts --codex-home and persists session data into that source home', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    const stdout = new CaptureStream();
+    try {
+      await mkdir(path.join(codexHome, 'sessions'), { recursive: true });
+      await writeFile(path.join(codexHome, 'config.toml'), 'model = "gpt-5.4-mini"\n', 'utf8');
+      await writeFile(path.join(codexHome, 'session_index.jsonl'), '', 'utf8');
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['beta'],
+        currentIndex: 0,
+        lastSuccessfulAccount: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
+
+      const exitCode = await runCli(['--codex-home', codexHome], {
+        appHome,
+        stdout,
+        stderr: stdout,
+        stdin: process.stdin,
+        interactive: false,
+        env: {
+          ...process.env,
+          CODEX_AUTO_CODEX_BIN: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SESSION_ID: 'cli-session'
+        }
+      });
+
+      expect(exitCode).toBe(0);
+      expect(await readFile(path.join(codexHome, 'session_index.jsonl'), 'utf8')).toContain('cli-session');
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
     }
   });
 

@@ -4,13 +4,14 @@ English | [中文](./README.zh-CN.md)
 
 A multi-account switcher for the `codex` CLI.
 
-It maintains multiple isolated `CODEX_HOME` directories and automatically rotates to the next account when the current one hits a rate limit, resuming the session where it left off.
+It keeps account auth under `~/.codex-auto/accounts/`, builds a temporary symlink overlay on top of your original `CODEX_HOME`, and automatically rotates to the next account when the current one hits a rate limit.
 
 ## Use Cases
 
 - You have multiple Codex accounts available
 - You don't want to manually edit `auth.json` or `config.toml`
 - You want automatic account rotation and session recovery when quota is exhausted
+- You want to keep your original Codex sessions, plugins, and MCP configuration
 
 ## Features
 
@@ -92,6 +93,12 @@ Start with a specific account:
 codex-auto --account b
 ```
 
+Start from a custom source `CODEX_HOME`:
+
+```bash
+codex-auto --codex-home /path/to/.codex
+```
+
 Remove an account:
 
 ```bash
@@ -147,6 +154,12 @@ Rules:
 Directory structure:
 
 ```text
+~/.codex/                  # your original Codex home, kept intact
+├── auth.json
+├── config.toml
+├── sessions/
+└── ...
+
 ~/.codex-auto/
 ├── accounts/
 │   ├── a/
@@ -154,21 +167,23 @@ Directory structure:
 │   │   ├── config.toml
 │   │   └── meta.json
 │   └── b/
-├── runtime/
-│   ├── auth.json
-│   ├── config.toml
-│   ├── session_index.jsonl
-│   └── sessions/
+├── instances/
+│   └── <timestamp-pid-seq>/
+│       ├── auth.json
+│       ├── config.toml -> ~/.codex/config.toml
+│       ├── session_index.jsonl -> ~/.codex/session_index.jsonl
+│       ├── sessions -> ~/.codex/sessions
+│       └── ...
 ├── logs/
 └── state.json
 ```
 
-- `accounts/<name>/` — per-account configuration
-- `runtime/` — the working directory actually used by `codex`
+- `accounts/<name>/` — per-account auth/config storage
+- `instances/<id>/` — per-run temporary overlay used as `CODEX_HOME`
 - `state.json` — account order, current index, last successful account, latest session ID
 - `logs/` — session logs and terminal transcripts
 
-Before each launch, `codex-auto` syncs the target account's `auth.json` and `config.toml` into `runtime/`, then starts `codex` using that runtime directory.
+For each managed run, `codex-auto` creates `~/.codex-auto/instances/<id>/`, symlinks entries from the source `CODEX_HOME`, replaces only `auth.json` with a real copy from the selected account, launches `codex` with that overlay, then removes the overlay when the process exits. This keeps session history, plugins, MCP config, and other Codex state in the original home.
 
 ## Account Switching & Session Recovery
 
@@ -178,14 +193,15 @@ When a rate limit is hit:
 
 1. Mark the current account as exhausted
 2. Switch to the next available account
-3. Read the latest session ID from runtime
-4. Attempt to resume:
+3. Rebuild the overlay with the next account's `auth.json`
+4. Read the latest session ID from the current overlay
+5. Attempt to resume:
 
 ```bash
 codex resume <session-id> Continue
 ```
 
-5. If the session ID is invalid, fall back to:
+6. If the session ID is invalid, fall back to:
 
 ```bash
 codex resume --last
@@ -198,6 +214,9 @@ To prevent stale transcript interference, only output after the most recent prom
 - `CODEX_AUTO_HOME`
   Data directory for `codex-auto`. Default: `~/.codex-auto`
 
+- `CODEX_HOME`
+  Source Codex home used as the overlay base. Default: `~/.codex`
+
 - `CODEX_AUTO_CODEX_BIN`
   Path to the `codex` executable. Default: `codex`
 
@@ -205,6 +224,7 @@ Example:
 
 ```bash
 CODEX_AUTO_HOME=/tmp/codex-auto \
+CODEX_HOME=/Users/me/.codex \
 CODEX_AUTO_CODEX_BIN=/opt/homebrew/bin/codex \
 codex-auto --account a
 ```
@@ -221,10 +241,12 @@ codex-auto remove <name>
 # Managed session (default)
 codex-auto
 codex-auto --account <name>
+codex-auto --codex-home /path/to/.codex
 
 # Passthrough to codex (all other arguments)
 codex-auto [any codex arguments...]
 codex-auto --account <name> [any codex arguments...]
+codex-auto --codex-home /path/to/.codex [any codex arguments...]
 ```
 
 ## Development

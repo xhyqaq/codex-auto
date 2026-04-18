@@ -4,13 +4,14 @@
 
 `codex-auto` 是一个给 `codex` CLI 用的多账号切换器。
 
-它维护多套独立的 `CODEX_HOME`，当当前账号命中额度限制时，自动切到下一个账号，并尽量恢复到刚才的会话继续执行。
+它把账号认证保存在 `~/.codex-auto/accounts/`，运行时基于你原始的 `CODEX_HOME` 创建临时 symlink overlay；当前账号命中额度限制时，会自动切到下一个账号并继续恢复会话。
 
 ## 适用场景
 
 - 你有多个可用的 Codex 账号
 - 不想手动改 `auth.json`、`config.toml`
 - 希望额度耗尽后自动切号并恢复会话
+- 希望继续复用原始 Codex 的会话历史、插件和 MCP 配置
 
 ## 当前能力
 
@@ -92,6 +93,12 @@ codex-auto
 codex-auto --account b
 ```
 
+使用自定义原始 `CODEX_HOME` 启动：
+
+```bash
+codex-auto --codex-home /path/to/.codex
+```
+
 删除账号：
 
 ```bash
@@ -147,6 +154,12 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 目录结构大致如下：
 
 ```text
+~/.codex/                  # 你的原始 Codex home，不会被改写
+├── auth.json
+├── config.toml
+├── sessions/
+└── ...
+
 ~/.codex-auto/
 ├── accounts/
 │   ├── a/
@@ -154,23 +167,25 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 │   │   ├── config.toml
 │   │   └── meta.json
 │   └── b/
-├── runtime/
-│   ├── auth.json
-│   ├── config.toml
-│   ├── session_index.jsonl
-│   └── sessions/
+├── instances/
+│   └── <timestamp-pid-seq>/
+│       ├── auth.json
+│       ├── config.toml -> ~/.codex/config.toml
+│       ├── session_index.jsonl -> ~/.codex/session_index.jsonl
+│       ├── sessions -> ~/.codex/sessions
+│       └── ...
 ├── logs/
 └── state.json
 ```
 
 其中：
 
-- `accounts/<name>/` 保存每个账号自己的配置
-- `runtime/` 是当前实际交给 `codex` 使用的运行时目录
+- `accounts/<name>/` 保存每个账号自己的认证与配置
+- `instances/<id>/` 是每次运行临时创建的 overlay `CODEX_HOME`
 - `state.json` 保存账号顺序、当前索引、上次成功账号、最近 session id
 - `logs/` 保存会话日志和终端 transcript
 
-每次启动前，`codex-auto` 会把目标账号的 `auth.json` 和 `config.toml` 同步到 `runtime/`，然后用这个 runtime 启动 `codex`。
+每次受管运行时，`codex-auto` 都会创建 `~/.codex-auto/instances/<id>/`，把原始 `CODEX_HOME` 中的条目符号链接进去，只把 `auth.json` 替换成当前账号的真实副本，然后用这个 overlay 启动 `codex`。进程退出后 overlay 会被清理，因此会话历史、插件、MCP 配置等仍然保留在原始 home 里。
 
 ## 切号与恢复逻辑
 
@@ -180,14 +195,15 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 
 1. 标记当前账号已耗尽
 2. 切换到下一个可用账号
-3. 从 runtime 中读取最新 session id
-4. 优先执行：
+3. 用下一个账号的 `auth.json` 重建 overlay
+4. 从当前 overlay 中读取最新 session id
+5. 优先执行：
 
 ```bash
 codex resume <session-id> Continue
 ```
 
-5. 如果该 session id 已失效，再回退到：
+6. 如果该 session id 已失效，再回退到：
 
 ```bash
 codex resume --last
@@ -200,6 +216,9 @@ codex resume --last
 - `CODEX_AUTO_HOME`
   指定 `codex-auto` 的数据目录，默认是 `~/.codex-auto`
 
+- `CODEX_HOME`
+  指定作为 overlay 基底的原始 Codex home，默认是 `~/.codex`
+
 - `CODEX_AUTO_CODEX_BIN`
   指定底层 `codex` 可执行文件路径，默认是 `codex`
 
@@ -207,6 +226,7 @@ codex resume --last
 
 ```bash
 CODEX_AUTO_HOME=/tmp/codex-auto \
+CODEX_HOME=/Users/me/.codex \
 CODEX_AUTO_CODEX_BIN=/opt/homebrew/bin/codex \
 codex-auto --account a
 ```
@@ -223,10 +243,12 @@ codex-auto remove <name>
 # 受管会话（默认）
 codex-auto
 codex-auto --account <name>
+codex-auto --codex-home /path/to/.codex
 
 # 透传给 codex（其余所有参数）
 codex-auto [任意 codex 参数...]
 codex-auto --account <name> [任意 codex 参数...]
+codex-auto --codex-home /path/to/.codex [任意 codex 参数...]
 ```
 
 ## 开发

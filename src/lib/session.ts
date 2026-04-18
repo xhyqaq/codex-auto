@@ -1,17 +1,17 @@
 import { spawn } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import type { Writable } from 'node:stream';
+import { spawn as spawnPty } from 'node-pty';
 import path from 'node:path';
-import { acquireRuntimeLock } from './lock.js';
 import { createSessionLogger } from './logger.js';
 import { buildCodexShellCommand, resolveCodexCommand } from './codex-bin.js';
 import { hasPromptMarker, hasQuotaError, sanitizeTerminalOutput } from './detection.js';
-import { getAccountByName, getCurrentAccount, pickNextAccount } from './rotation.js';
-import { loadState, saveState } from './state.js';
-import { logsRoot, runtimeHome, runtimeSessionIndexPath, runtimeSessionsRoot } from './paths.js';
-import { ensureAppLayout, syncRuntimeAccount } from './runtime.js';
 import { markAccountUsed } from './accounts.js';
 import { readTextIfExists } from './fs.js';
+import { accountAuthPath, instanceHome, resolveCodexHome } from './paths.js';
+import { getAccountByName, getCurrentAccount, pickNextAccount } from './rotation.js';
+import { ensureAppLayout, cleanupInstanceOverlay, createInstanceOverlay } from './runtime.js';
+import { loadState, saveState } from './state.js';
 
 type OutputLike = Writable & {
   columns?: number;
@@ -21,6 +21,7 @@ type OutputLike = Writable & {
 
 export type RunManagedSessionOptions = {
   appHome: string;
+  codexHome?: string;
   workspaceDir: string;
   preferredAccountName?: string;
   extraArgs?: string[];
@@ -76,12 +77,41 @@ function toPtyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   );
 }
 
+function getTerminalSize(stdout: OutputLike): { cols: number; rows: number } {
+  return {
+    cols: Math.max(1, stdout.columns ?? 80),
+    rows: Math.max(1, stdout.rows ?? 24)
+  };
+}
+
+function enterRawMode(stdin: NodeJS.ReadStream): (() => void) | null {
+  const ttyStdin = stdin as NodeJS.ReadStream & {
+    setRawMode?: (value: boolean) => void;
+    isRaw?: boolean;
+    resume?: () => void;
+    pause?: () => void;
+  };
+
+  if (!ttyStdin.isTTY || typeof ttyStdin.setRawMode !== 'function') {
+    return null;
+  }
+
+  const previousRawMode = ttyStdin.isRaw === true;
+  ttyStdin.setRawMode(true);
+  ttyStdin.resume?.();
+
+  return () => {
+    ttyStdin.setRawMode?.(previousRawMode);
+    ttyStdin.pause?.();
+  };
+}
+
 function hasMissingSessionError(output: string): boolean {
   return /No saved session found with ID/i.test(output);
 }
 
-async function readLatestSessionId(appHome: string): Promise<string | null> {
-  const indexText = await readTextIfExists(runtimeSessionIndexPath(appHome));
+async function readLatestSessionId(instanceDir: string): Promise<string | null> {
+  const indexText = await readTextIfExists(path.join(instanceDir, 'session_index.jsonl'));
   if (indexText) {
     const lines = indexText
       .split('\n')
@@ -101,11 +131,11 @@ async function readLatestSessionId(appHome: string): Promise<string | null> {
     }
   }
 
-  return readLatestSessionIdFromFiles(appHome);
+  return readLatestSessionIdFromFiles(instanceDir);
 }
 
-async function readLatestSessionIdFromFiles(appHome: string): Promise<string | null> {
-  const sessionFiles = await collectSessionFiles(runtimeSessionsRoot(appHome));
+async function readLatestSessionIdFromFiles(instanceDir: string): Promise<string | null> {
+  const sessionFiles = await collectSessionFiles(path.join(instanceDir, 'sessions'));
   const latestFile = sessionFiles.sort().at(-1);
   if (!latestFile) {
     return null;
@@ -165,6 +195,7 @@ async function persistLastSessionId(appHome: string, sessionId: string | null): 
 
 async function launchResumeInvocation(options: {
   appHome: string;
+  instanceDir: string;
   workspaceDir: string;
   codexCommand: string;
   env: NodeJS.ProcessEnv;
@@ -177,6 +208,7 @@ async function launchResumeInvocation(options: {
   if (options.sessionId) {
     const byIdResult = await launchInvocation({
       appHome: options.appHome,
+      instanceDir: options.instanceDir,
       workspaceDir: options.workspaceDir,
       codexCommand: options.codexCommand,
       args: ['resume', '--no-alt-screen', options.sessionId, 'Continue'],
@@ -197,6 +229,7 @@ async function launchResumeInvocation(options: {
 
   return launchInvocation({
     appHome: options.appHome,
+    instanceDir: options.instanceDir,
     workspaceDir: options.workspaceDir,
     codexCommand: options.codexCommand,
     args: ['resume', '--last', '--no-alt-screen'],
@@ -209,6 +242,7 @@ async function launchResumeInvocation(options: {
 
 async function launchInvocation(options: {
   appHome: string;
+  instanceDir: string;
   workspaceDir: string;
   codexCommand: string;
   args: string[];
@@ -219,7 +253,6 @@ async function launchInvocation(options: {
 }): Promise<InvocationResult> {
   const command = buildCodexShellCommand(options.codexCommand, options.args);
   const shell = options.env.SHELL || '/bin/zsh';
-  const runtimePath = runtimeHome(options.appHome);
   const stdout = options.stdout;
   const deferQuotaDetectionUntilPrompt = options.args[0] === 'resume';
   let sanitizedOutput = '';
@@ -239,76 +272,94 @@ async function launchInvocation(options: {
   };
 
   if (options.interactive) {
-    const transcriptPath = path.join(logsRoot(options.appHome), `typescript-${Date.now()}.log`);
-    const child = spawn('script', ['-qF', transcriptPath, shell, '-lc', command], {
-      cwd: options.workspaceDir,
-      env: toPtyEnv({
-        ...options.env,
-        CODEX_HOME: runtimePath
-      }),
-      stdio: 'inherit'
-    });
-    let exitCode = 0;
-    let quotaDetected = false;
-    let polling = false;
+    if (options.env.CODEX_AUTO_INTERACTIVE_TRANSPORT === 'direct') {
+      const child = spawn(shell, ['-lc', command], {
+        cwd: options.workspaceDir,
+        env: toPtyEnv({
+          ...options.env,
+          CODEX_HOME: options.instanceDir
+        }),
+        stdio: 'inherit'
+      });
 
-    const pollTranscript = async (): Promise<void> => {
-      if (polling || quotaDetected) {
+      return new Promise<InvocationResult>((resolve) => {
+        child.on('error', (error) => {
+          resolve({
+            exitCode: 1,
+            quotaError: false,
+            output: error.message
+          });
+        });
+
+        child.on('close', (code) => {
+          resolve({
+            exitCode: code ?? 1,
+            quotaError: false,
+            output: ''
+          });
+        });
+      });
+    }
+    const terminalSize = getTerminalSize(stdout);
+    const ptyProcess = spawnPty(shell, ['-lc', command], {
+      name: options.env.TERM || 'xterm-256color',
+      cols: terminalSize.cols,
+      rows: terminalSize.rows,
+      cwd: options.workspaceDir,
+      env: {
+        ...toPtyEnv(options.env),
+        CODEX_HOME: options.instanceDir
+      }
+    });
+    let quotaDetected = false;
+
+    const stdinDataHandler = (chunk: Buffer | string): void => {
+      ptyProcess.write(chunk.toString());
+    };
+    const stdoutResizeHandler = (): void => {
+      const nextSize = getTerminalSize(stdout);
+      ptyProcess.resize(nextSize.cols, nextSize.rows);
+    };
+
+    options.stdin.on('data', stdinDataHandler);
+    stdout.on('resize', stdoutResizeHandler);
+    const restoreTerminal = enterRawMode(options.stdin);
+
+    const dataDisposable = ptyProcess.onData((data) => {
+      stdout.write(data);
+      sanitizedOutput = `${sanitizedOutput}${sanitizeTerminalOutput(data)}`.slice(-20000);
+      if (quotaDetected || !evaluateQuotaOutput(sanitizedOutput)) {
         return;
       }
 
-      polling = true;
-      try {
-        const transcript = await readTextIfExists(transcriptPath);
-        const output = sanitizeTerminalOutput(transcript ?? '');
-        if (evaluateQuotaOutput(output)) {
-          quotaDetected = true;
-          child.kill('SIGTERM');
-        }
-      } finally {
-        polling = false;
-      }
-    };
-
-    const interval = setInterval(() => {
-      void pollTranscript();
-    }, 200);
+      quotaDetected = true;
+      ptyProcess.kill();
+    });
 
     return new Promise<InvocationResult>((resolve) => {
-      child.on('error', async (error) => {
-        clearInterval(interval);
-        const transcript = await readTextIfExists(transcriptPath);
-        const output = sanitizeTerminalOutput(transcript ?? '');
-        resolve({
-          exitCode: 1,
-          quotaError: quotaDetected || evaluateQuotaOutput(output),
-          output: `${output}\n${error.message}`.trim()
-        });
-      });
-
-      child.on('close', async (code) => {
-        clearInterval(interval);
-        exitCode = code ?? 1;
-        const transcript = await readTextIfExists(transcriptPath);
-        const output = sanitizeTerminalOutput(transcript ?? '');
+      const exitDisposable = ptyProcess.onExit(({ exitCode }) => {
+        dataDisposable.dispose();
+        exitDisposable.dispose();
+        options.stdin.off('data', stdinDataHandler);
+        stdout.off('resize', stdoutResizeHandler);
+        restoreTerminal?.();
         resolve({
           exitCode,
-          quotaError: quotaDetected || evaluateQuotaOutput(output),
-          output
+          quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
+          output: sanitizedOutput
         });
       });
     });
   }
 
   const child = spawn(shell, ['-lc', command], {
-        cwd: options.workspaceDir,
-        env: toPtyEnv({
-          ...options.env,
-          CODEX_HOME: runtimePath
-        }),
-        stdio: 'pipe'
-      });
-  let exitCode = 0;
+    cwd: options.workspaceDir,
+    env: toPtyEnv({
+      ...options.env,
+      CODEX_HOME: options.instanceDir
+    }),
+    stdio: 'pipe'
+  });
   let quotaDetected = false;
 
   const triggerQuotaRotation = (): void => {
@@ -334,13 +385,8 @@ async function launchInvocation(options: {
     triggerQuotaRotation();
   });
 
-  const cleanupCallbacks: Array<() => void> = [];
   return new Promise<InvocationResult>((resolve) => {
     child.on('error', (error) => {
-      for (const callback of cleanupCallbacks.reverse()) {
-        callback();
-      }
-
       resolve({
         exitCode: 1,
         quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
@@ -349,13 +395,8 @@ async function launchInvocation(options: {
     });
 
     child.on('close', (code) => {
-      exitCode = code ?? 1;
-      for (const callback of cleanupCallbacks.reverse()) {
-        callback();
-      }
-
       resolve({
-        exitCode,
+        exitCode: code ?? 1,
         quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
         output: sanitizedOutput
       });
@@ -363,9 +404,12 @@ async function launchInvocation(options: {
   });
 }
 
+function buildInstanceId(sequence: number): string {
+  return `${Date.now()}-${process.pid}-${sequence}`;
+}
+
 export async function runManagedSession(options: RunManagedSessionOptions): Promise<RunManagedSessionResult> {
   await ensureAppLayout(options.appHome);
-  const releaseLock = await acquireRuntimeLock(options.appHome);
   const logger = await createSessionLogger(options.appHome);
   const stdout = options.stdout ?? (process.stdout as OutputLike);
   const stderr = options.stderr ?? (process.stderr as OutputLike);
@@ -374,42 +418,51 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
     ...process.env,
     ...options.env
   };
+  const codexHome = options.codexHome ?? resolveCodexHome(env);
   const codexCommand = options.codexCommand ?? resolveCodexCommand(env);
   const interactive =
     (options.interactive ?? canUseInteractiveTerminal(stdin, stdout, stderr)) &&
     canUseInteractiveTerminal(stdin, stdout, stderr);
   let switchCount = 0;
+  let overlaySequence = 0;
 
-  try {
-    const state = await loadState(options.appHome);
-    let current = options.preferredAccountName
-      ? getAccountByName(state, options.preferredAccountName)
-      : getCurrentAccount(state);
-    if (!current) {
-      if (state.accounts.length === 0) {
-        throw new Error('No accounts configured. Run `codex-auto add <name>` first.');
-      }
-
-      throw new Error(`Account "${options.preferredAccountName}" does not exist.`);
+  const state = await loadState(options.appHome);
+  let current = options.preferredAccountName
+    ? getAccountByName(state, options.preferredAccountName)
+    : getCurrentAccount(state);
+  if (!current) {
+    if (state.accounts.length === 0) {
+      throw new Error('No accounts configured. Run `codex-auto add <name>` first.');
     }
 
-    const exhausted = new Set<string>();
-    let firstRun = true;
-    let lastSessionId = state.lastSessionId;
+    throw new Error(`Account "${options.preferredAccountName}" does not exist.`);
+  }
 
-    while (true) {
-      await syncRuntimeAccount(options.appHome, current.name, options.workspaceDir);
-      await logger.log('launch', {
-        account: current.name,
-        resume: !firstRun,
-        sessionId: firstRun ? null : lastSessionId
-      });
+  const exhausted = new Set<string>();
+  let firstRun = true;
+  let lastSessionId = state.lastSessionId;
 
+  while (true) {
+    const instanceId = buildInstanceId(overlaySequence);
+    overlaySequence += 1;
+    const instanceDir = instanceHome(options.appHome, instanceId);
+    const authPath = accountAuthPath(options.appHome, current.name);
+
+    await createInstanceOverlay(codexHome, instanceDir, authPath);
+    await logger.log('launch', {
+      account: current.name,
+      resume: !firstRun,
+      sessionId: firstRun ? null : lastSessionId,
+      instanceId
+    });
+
+    try {
       const firstRunArgs = buildFirstRunArgs(options.extraArgs ?? []);
 
       const result = firstRun
         ? await launchInvocation({
             appHome: options.appHome,
+            instanceDir,
             workspaceDir: options.workspaceDir,
             codexCommand,
             args: firstRunArgs,
@@ -420,6 +473,7 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
           })
         : await launchResumeInvocation({
             appHome: options.appHome,
+            instanceDir,
             workspaceDir: options.workspaceDir,
             codexCommand,
             env,
@@ -430,7 +484,7 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
             logger
           });
 
-      const discoveredSessionId = await readLatestSessionId(options.appHome);
+      const discoveredSessionId = await readLatestSessionId(instanceDir);
       if (discoveredSessionId) {
         lastSessionId = discoveredSessionId;
         await persistLastSessionId(options.appHome, discoveredSessionId);
@@ -443,7 +497,7 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
         latestState.lastSessionId = lastSessionId;
         await saveState(options.appHome, latestState);
         await markAccountUsed(options.appHome, current.name);
-        await logger.log('exit', { account: current.name, exitCode: result.exitCode });
+        await logger.log('exit', { account: current.name, exitCode: result.exitCode, instanceId });
 
         return {
           finalAccount: current.name,
@@ -454,20 +508,22 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
       }
 
       exhausted.add(current.name);
-      const next = pickNextAccount(state.accounts, current.index, exhausted);
+      const latestState = await loadState(options.appHome);
+      const next = pickNextAccount(latestState.accounts, current.index, exhausted);
       await logger.log('quota_switch', {
         from: current.name,
-        exhausted: [...exhausted]
+        exhausted: [...exhausted],
+        instanceId
       });
 
       if (!next) {
-        const latestState = await loadState(options.appHome);
         latestState.currentIndex = current.index;
         latestState.lastSessionId = lastSessionId;
         await saveState(options.appHome, latestState);
-        stderr.write(`\n[codex-auto] All configured accounts are exhausted.\n`);
+        stderr.write('\n[codex-auto] All configured accounts are exhausted.\n');
         await logger.log('all_exhausted', {
-          finalAccount: current.name
+          finalAccount: current.name,
+          instanceId
         });
 
         return {
@@ -480,14 +536,13 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
 
       switchCount += 1;
       stderr.write(`\n[codex-auto] ${current.name} hit a quota limit. Switching to ${next.name} and resuming...\n`);
-      current = next;
-      const latestState = await loadState(options.appHome);
       latestState.currentIndex = next.index;
       latestState.lastSessionId = lastSessionId;
       await saveState(options.appHome, latestState);
+      current = next;
       firstRun = false;
+    } finally {
+      await cleanupInstanceOverlay(instanceDir);
     }
-  } finally {
-    await releaseLock();
   }
 }

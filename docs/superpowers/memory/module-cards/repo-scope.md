@@ -1,7 +1,7 @@
 ---
 type: module_card
 title: repo-scope
-summary: Current repository scope and confirmed constraints for the planned codex-auto CLI.
+summary: Current repository scope and confirmed constraints for the codex-auto CLI.
 tags:
   - product
   - cli
@@ -35,8 +35,9 @@ status: active
 - Automatic switching is only triggered by explicit usage-limit style failures
 - The product targets macOS terminal workflows only
 - Conversation continuity must stay on the same Codex session via `codex resume`
-- Shared runtime state lives under `~/.codex-auto/runtime`
 - Account-private auth/config lives under `~/.codex-auto/accounts/<name>`
+- Managed runs use per-instance overlays under `~/.codex-auto/instances/<id>`
+- The overlay base comes from `CODEX_HOME` or defaults to `~/.codex`
 
 ## Extension points
 
@@ -47,6 +48,8 @@ status: active
 ## Common pitfalls
 
 - Treating `config.toml` as if it contains the full login state
-- Isolating the entire `CODEX_HOME` per account without preserving shared session state for resume
+- Reintroducing a single mutable shared runtime and breaking concurrent managed sessions
+- Assuming overlay cleanup is optional; stale instance directories should be treated as disposable runtime artifacts
 - Mistaking transient network or auth errors for quota exhaustion
-- Assuming macOS PTY automation can rely on `node-pty` in every environment; this repo currently uses `script` for interactive runs and a plain shell fallback for non-interactive tests
+- Treating `script` as an acceptable default PTY wrapper; split-pane redraw regressions make that product behavior invalid
+- Rolling back `node-pty` below the currently verified line without re-testing interactive spawn and redraw behavior

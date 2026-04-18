@@ -5,6 +5,10 @@ export function resolveAppHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.CODEX_AUTO_HOME?.trim() || path.join(homedir(), '.codex-auto');
 }
 
+export function resolveCodexHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CODEX_HOME?.trim() || path.join(homedir(), '.codex');
+}
+
 export function accountsRoot(appHome: string): string {
   return path.join(appHome, 'accounts');
 }
@@ -25,28 +29,12 @@ export function accountMetaPath(appHome: string, name: string): string {
   return path.join(accountHome(appHome, name), 'meta.json');
 }
 
-export function runtimeHome(appHome: string): string {
-  return path.join(appHome, 'runtime');
+export function instancesRoot(appHome: string): string {
+  return path.join(appHome, 'instances');
 }
 
-export function runtimeAuthPath(appHome: string): string {
-  return path.join(runtimeHome(appHome), 'auth.json');
-}
-
-export function runtimeConfigPath(appHome: string): string {
-  return path.join(runtimeHome(appHome), 'config.toml');
-}
-
-export function runtimeSessionIndexPath(appHome: string): string {
-  return path.join(runtimeHome(appHome), 'session_index.jsonl');
-}
-
-export function runtimeSessionsRoot(appHome: string): string {
-  return path.join(runtimeHome(appHome), 'sessions');
-}
-
-export function runtimeLockPath(appHome: string): string {
-  return path.join(runtimeHome(appHome), '.lock');
+export function instanceHome(appHome: string, instanceId: string): string {
+  return path.join(instancesRoot(appHome), instanceId);
 }
 
 export function statePath(appHome: string): string {
