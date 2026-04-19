@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import type { Writable } from 'node:stream';
 import { spawn as spawnPty } from 'node-pty';
 import path from 'node:path';
@@ -10,7 +11,8 @@ import { markAccountUsed } from './accounts.js';
 import { readTextIfExists } from './fs.js';
 import { accountAuthPath, instanceHome, resolveCodexHome } from './paths.js';
 import { getAccountByName, getCurrentAccount, getPreferredAccount, pickNextAccount } from './rotation.js';
-import { ensureAppLayout, cleanupInstanceOverlay, createInstanceOverlay } from './runtime.js';
+import { writeManagedRunState } from './run-state.js';
+import { ensureAppLayout, cleanupInstanceOverlay, createInstanceOverlay, replaceOverlayAuth } from './runtime.js';
 import { loadState, saveState, type RetryAvailability } from './state.js';
 
 type OutputLike = Writable & {
@@ -111,52 +113,138 @@ function hasMissingSessionError(output: string): boolean {
   return /No saved session found with ID/i.test(output);
 }
 
-async function readLatestSessionId(instanceDir: string): Promise<string | null> {
-  const indexText = await readTextIfExists(path.join(instanceDir, 'session_index.jsonl'));
-  if (indexText) {
-    const lines = indexText
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .reverse();
+type SessionCandidate = {
+  id: string;
+  cwd: string | null;
+  timestampMs: number;
+};
 
-    for (const line of lines) {
-      try {
-        const parsed = JSON.parse(line) as { id?: unknown };
-        if (typeof parsed.id === 'string' && parsed.id.length > 0) {
-          return parsed.id;
-        }
-      } catch {
-        continue;
-      }
-    }
-  }
-
-  return readLatestSessionIdFromFiles(instanceDir);
-}
-
-async function readLatestSessionIdFromFiles(instanceDir: string): Promise<string | null> {
-  const sessionFiles = await collectSessionFiles(path.join(instanceDir, 'sessions'));
-  const latestFile = sessionFiles.sort().at(-1);
-  if (!latestFile) {
+function parseDateMs(value: unknown): number | null {
+  if (typeof value !== 'string') {
     return null;
   }
 
-  const fileText = await readTextIfExists(latestFile);
-  const firstLine = fileText?.split('\n').find((line) => line.trim().length > 0);
-  if (firstLine) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function readSessionCandidatesFromFiles(instanceDir: string): Promise<SessionCandidate[]> {
+  const sessionFiles = await collectSessionFiles(path.join(instanceDir, 'sessions'));
+  const candidates: SessionCandidate[] = [];
+
+  for (const sessionFile of sessionFiles) {
+    const fileText = await readTextIfExists(sessionFile);
+    const firstLine = fileText?.split('\n').find((line) => line.trim().length > 0);
+    if (!firstLine) {
+      continue;
+    }
+
     try {
-      const parsed = JSON.parse(firstLine) as { payload?: { id?: unknown } };
-      if (typeof parsed.payload?.id === 'string' && parsed.payload.id.length > 0) {
-        return parsed.payload.id;
+      const parsed = JSON.parse(firstLine) as {
+        type?: unknown;
+        payload?: { id?: unknown; cwd?: unknown; timestamp?: unknown };
+      };
+
+      if (parsed.type !== 'session_meta') {
+        continue;
+      }
+
+      const timestampMs = parseDateMs(parsed.payload?.timestamp);
+      if (typeof parsed.payload?.id === 'string' && timestampMs !== null) {
+        candidates.push({
+          id: parsed.payload.id,
+          cwd: typeof parsed.payload.cwd === 'string' ? parsed.payload.cwd : null,
+          timestampMs
+        });
       }
     } catch {
-      // Fall through to filename parsing.
+      const match = path.basename(sessionFile).match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i);
+      if (match) {
+        candidates.push({
+          id: match[1],
+          cwd: null,
+          timestampMs: 0
+        });
+      }
     }
   }
 
-  const match = path.basename(latestFile).match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i);
-  return match?.[1] ?? null;
+  return candidates;
+}
+
+async function readSessionCandidatesFromIndex(instanceDir: string): Promise<SessionCandidate[]> {
+  const indexText = await readTextIfExists(path.join(instanceDir, 'session_index.jsonl'));
+  if (!indexText) {
+    return [];
+  }
+
+  const candidates: SessionCandidate[] = [];
+  for (const line of indexText.split('\n').map((value) => value.trim()).filter(Boolean)) {
+    try {
+      const parsed = JSON.parse(line) as { id?: unknown; updated_at?: unknown };
+      const timestampMs = parseDateMs(parsed.updated_at);
+      if (typeof parsed.id === 'string' && timestampMs !== null) {
+        candidates.push({
+          id: parsed.id,
+          cwd: null,
+          timestampMs
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return candidates;
+}
+
+async function snapshotKnownSessionIds(instanceDir: string): Promise<Set<string>> {
+  const [fromFiles, fromIndex] = await Promise.all([
+    readSessionCandidatesFromFiles(instanceDir),
+    readSessionCandidatesFromIndex(instanceDir)
+  ]);
+
+  return new Set([...fromFiles, ...fromIndex].map((candidate) => candidate.id));
+}
+
+function selectBestSessionCandidate(
+  candidates: SessionCandidate[],
+  workspaceDir: string,
+  launchStartedAt: number
+): string | null {
+  const freshCandidates = candidates.filter((candidate) => candidate.timestampMs >= launchStartedAt - 60_000);
+  const cwdMatched = freshCandidates.filter((candidate) => candidate.cwd === null || candidate.cwd === workspaceDir);
+  const ranked = (cwdMatched.length > 0 ? cwdMatched : freshCandidates).sort((left, right) => {
+    const deltaDiff = Math.abs(left.timestampMs - launchStartedAt) - Math.abs(right.timestampMs - launchStartedAt);
+    if (deltaDiff !== 0) {
+      return deltaDiff;
+    }
+
+    return left.timestampMs - right.timestampMs;
+  });
+
+  return ranked[0]?.id ?? null;
+}
+
+async function discoverSessionId(options: {
+  instanceDir: string;
+  workspaceDir: string;
+  launchStartedAt: number;
+  knownSessionIds: Set<string>;
+}): Promise<string | null> {
+  const [fromFiles, fromIndex] = await Promise.all([
+    readSessionCandidatesFromFiles(options.instanceDir),
+    readSessionCandidatesFromIndex(options.instanceDir)
+  ]);
+
+  const newFileCandidates = fromFiles.filter((candidate) => !options.knownSessionIds.has(candidate.id));
+  const discoveredFromFiles = selectBestSessionCandidate(newFileCandidates, options.workspaceDir, options.launchStartedAt);
+  if (discoveredFromFiles) {
+    return discoveredFromFiles;
+  }
+
+  const newIndexCandidates = fromIndex.filter((candidate) => !options.knownSessionIds.has(candidate.id));
+  return selectBestSessionCandidate(newIndexCandidates, options.workspaceDir, options.launchStartedAt);
 }
 
 async function collectSessionFiles(root: string): Promise<string[]> {
@@ -203,37 +291,14 @@ async function launchResumeInvocation(options: {
   stdin: NodeJS.ReadStream;
   stdout: OutputLike;
   interactive: boolean;
-  sessionId: string | null;
-  logger: Awaited<ReturnType<typeof createSessionLogger>>;
+  sessionId: string;
 }): Promise<InvocationResult> {
-  if (options.sessionId) {
-    const byIdResult = await launchInvocation({
-      appHome: options.appHome,
-      instanceDir: options.instanceDir,
-      workspaceDir: options.workspaceDir,
-      codexCommand: options.codexCommand,
-      args: ['resume', '--no-alt-screen', options.sessionId, 'Continue'],
-      env: options.env,
-      stdin: options.stdin,
-      stdout: options.stdout,
-      interactive: options.interactive
-    });
-
-    if (!byIdResult.quotaError && byIdResult.exitCode !== 0 && hasMissingSessionError(byIdResult.output)) {
-      await options.logger.log('resume_fallback_last', {
-        sessionId: options.sessionId
-      });
-    } else {
-      return byIdResult;
-    }
-  }
-
   return launchInvocation({
     appHome: options.appHome,
     instanceDir: options.instanceDir,
     workspaceDir: options.workspaceDir,
     codexCommand: options.codexCommand,
-    args: ['resume', '--last', '--no-alt-screen'],
+    args: ['resume', '--no-alt-screen', options.sessionId, 'Continue'],
     env: options.env,
     stdin: options.stdin,
     stdout: options.stdout,
@@ -410,8 +475,8 @@ async function launchInvocation(options: {
   });
 }
 
-function buildInstanceId(sequence: number): string {
-  return `${Date.now()}-${process.pid}-${sequence}`;
+function buildInstanceId(): string {
+  return `${Date.now()}-${process.pid}-${randomUUID()}`;
 }
 
 export async function runManagedSession(options: RunManagedSessionOptions): Promise<RunManagedSessionResult> {
@@ -430,7 +495,6 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
     (options.interactive ?? canUseInteractiveTerminal(stdin, stdout, stderr)) &&
     canUseInteractiveTerminal(stdin, stdout, stderr);
   let switchCount = 0;
-  let overlaySequence = 0;
 
   const state = await loadState(options.appHome);
   let current = options.preferredAccountName
@@ -446,23 +510,43 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
 
   const exhausted = new Set<string>();
   let firstRun = true;
-  let lastSessionId = state.lastSessionId;
+  let lastSessionId: string | null = null;
+  const instanceId = buildInstanceId();
+  const runId = instanceId;
+  const instanceDir = instanceHome(options.appHome, instanceId);
+  const authPath = accountAuthPath(options.appHome, current.name);
+  let sessionBindingLost = false;
+  const runStartedAt = new Date().toISOString();
 
-  while (true) {
-    const instanceId = buildInstanceId(overlaySequence);
-    overlaySequence += 1;
-    const instanceDir = instanceHome(options.appHome, instanceId);
-    const authPath = accountAuthPath(options.appHome, current.name);
+  await writeManagedRunState(options.appHome, {
+    runId,
+    pid: process.pid,
+    workspaceDir: options.workspaceDir,
+    startedAt: runStartedAt,
+    status: 'running',
+    currentAccount: current.name,
+    currentSessionId: null,
+    sessionBindingLost
+  });
 
-    await createInstanceOverlay(codexHome, instanceDir, authPath);
-    await logger.log('launch', {
-      account: current.name,
-      resume: !firstRun,
-      sessionId: firstRun ? null : lastSessionId,
-      instanceId
-    });
+  await createInstanceOverlay(codexHome, instanceDir, authPath);
 
-    try {
+  try {
+    while (true) {
+      let knownSessionIds = new Set<string>();
+      let launchStartedAt = 0;
+      if (firstRun && !lastSessionId) {
+        knownSessionIds = await snapshotKnownSessionIds(instanceDir);
+        launchStartedAt = Date.now();
+      }
+
+      await logger.log('launch', {
+        account: current.name,
+        resume: !firstRun,
+        sessionId: firstRun ? null : lastSessionId,
+        instanceId
+      });
+
       const firstRunArgs = buildFirstRunArgs(options.extraArgs ?? []);
 
       const result = firstRun
@@ -486,14 +570,52 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
             stdin,
             stdout,
             interactive,
-            sessionId: lastSessionId,
-            logger
+            sessionId: lastSessionId as string
           });
 
-      const discoveredSessionId = await readLatestSessionId(instanceDir);
-      if (discoveredSessionId) {
+      const discoveredSessionId: string | null = firstRun && !lastSessionId
+        ? await discoverSessionId({
+            instanceDir,
+            workspaceDir: options.workspaceDir,
+            launchStartedAt,
+            knownSessionIds
+          })
+        : null;
+      if (discoveredSessionId && !lastSessionId) {
         lastSessionId = discoveredSessionId;
         await persistLastSessionId(options.appHome, discoveredSessionId);
+        await writeManagedRunState(options.appHome, {
+          runId,
+          pid: process.pid,
+          workspaceDir: options.workspaceDir,
+          startedAt: runStartedAt,
+          status: 'running',
+          currentAccount: current.name,
+          currentSessionId: discoveredSessionId,
+          sessionBindingLost
+        });
+      }
+
+      if (!firstRun && result.exitCode !== 0 && hasMissingSessionError(result.output)) {
+        sessionBindingLost = true;
+        stderr.write('\n[codex-auto] Unable to safely resume bound session: saved session id is no longer available.\n');
+        await writeManagedRunState(options.appHome, {
+          runId,
+          pid: process.pid,
+          workspaceDir: options.workspaceDir,
+          startedAt: runStartedAt,
+          status: 'recovery_failed',
+          currentAccount: current.name,
+          currentSessionId: lastSessionId,
+          sessionBindingLost
+        });
+
+        return {
+          finalAccount: current.name,
+          switchCount,
+          exitCode: result.exitCode || 1,
+          exhaustedAll: false
+        };
       }
 
       if (!result.quotaError) {
@@ -505,6 +627,16 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
         await saveState(options.appHome, latestState);
         await markAccountUsed(options.appHome, current.name);
         await logger.log('exit', { account: current.name, exitCode: result.exitCode, instanceId });
+        await writeManagedRunState(options.appHome, {
+          runId,
+          pid: process.pid,
+          workspaceDir: options.workspaceDir,
+          startedAt: runStartedAt,
+          status: 'exited',
+          currentAccount: current.name,
+          currentSessionId: lastSessionId,
+          sessionBindingLost
+        });
 
         return {
           finalAccount: current.name,
@@ -535,12 +667,44 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
           finalAccount: current.name,
           instanceId
         });
+        await writeManagedRunState(options.appHome, {
+          runId,
+          pid: process.pid,
+          workspaceDir: options.workspaceDir,
+          startedAt: runStartedAt,
+          status: 'failed',
+          currentAccount: current.name,
+          currentSessionId: lastSessionId,
+          sessionBindingLost
+        });
 
         return {
           finalAccount: current.name,
           switchCount,
           exitCode: result.exitCode || 1,
           exhaustedAll: true
+        };
+      }
+
+      if (!lastSessionId) {
+        sessionBindingLost = true;
+        stderr.write('\n[codex-auto] Unable to safely resume bound session: no session id was captured for this run.\n');
+        await writeManagedRunState(options.appHome, {
+          runId,
+          pid: process.pid,
+          workspaceDir: options.workspaceDir,
+          startedAt: runStartedAt,
+          status: 'recovery_failed',
+          currentAccount: current.name,
+          currentSessionId: null,
+          sessionBindingLost
+        });
+
+        return {
+          finalAccount: current.name,
+          switchCount,
+          exitCode: result.exitCode || 1,
+          exhaustedAll: false
         };
       }
 
@@ -551,8 +715,19 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
       await saveState(options.appHome, latestState);
       current = next;
       firstRun = false;
-    } finally {
-      await cleanupInstanceOverlay(instanceDir);
+      await replaceOverlayAuth(instanceDir, accountAuthPath(options.appHome, current.name));
+      await writeManagedRunState(options.appHome, {
+        runId,
+        pid: process.pid,
+        workspaceDir: options.workspaceDir,
+        startedAt: runStartedAt,
+        status: 'running',
+        currentAccount: current.name,
+        currentSessionId: lastSessionId,
+        sessionBindingLost
+      });
     }
+  } finally {
+    await cleanupInstanceOverlay(instanceDir);
   }
 }

@@ -1,10 +1,11 @@
 import { readdir, symlink, rm, copyFile } from 'node:fs/promises';
 import path from 'node:path';
-import { ensureDir, pathExists } from './fs.js';
+import { copyFileAtomic, ensureDir, pathExists } from './fs.js';
 import {
   accountsRoot,
   instancesRoot,
-  logsRoot
+  logsRoot,
+  runsRoot
 } from './paths.js';
 
 export async function ensureAppLayout(appHome: string): Promise<void> {
@@ -12,7 +13,8 @@ export async function ensureAppLayout(appHome: string): Promise<void> {
     ensureDir(appHome),
     ensureDir(accountsRoot(appHome)),
     ensureDir(instancesRoot(appHome)),
-    ensureDir(logsRoot(appHome))
+    ensureDir(logsRoot(appHome)),
+    ensureDir(runsRoot(appHome))
   ]);
 }
 
@@ -54,4 +56,12 @@ export async function createInstanceOverlay(
 
 export async function cleanupInstanceOverlay(instanceDir: string): Promise<void> {
   await rm(instanceDir, { recursive: true, force: true });
+}
+
+export async function replaceOverlayAuth(instanceDir: string, accountAuthPath: string): Promise<void> {
+  if (!(await pathExists(accountAuthPath))) {
+    throw new Error(`Missing auth.json at ${accountAuthPath}`);
+  }
+
+  await copyFileAtomic(accountAuthPath, path.join(instanceDir, 'auth.json'));
 }

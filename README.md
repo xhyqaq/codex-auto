@@ -24,8 +24,9 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 - Save a default start account for future runs
 - Automatically switch to the next account on rate limit
 - Show retry times for accounts that are still waiting for quota to reset
-- Resume sessions using recorded session IDs
-- Fall back to `codex resume --last` if the session ID is invalid
+- Bind each active managed session to its own recovery target across same-project and cross-project concurrent runs
+- Resume only the session ID already bound to the current managed run instead of guessing from the latest session
+- Stop automatic recovery when the original session cannot be confirmed or its session ID is no longer valid
 - Automatically send `Continue` on resume
 - Log sessions and terminal transcripts
 - Pass through all `codex` arguments and subcommands (e.g. `exec`, `review`, `--model`, `--full-auto`)
@@ -190,22 +191,25 @@ Directory structure:
 │   │   └── meta.json
 │   └── b/
 ├── instances/
-│   └── <timestamp-pid-seq>/
+│   └── <timestamp-pid-uuid>/
 │       ├── auth.json
 │       ├── config.toml -> ~/.codex/config.toml
 │       ├── session_index.jsonl -> ~/.codex/session_index.jsonl
 │       ├── sessions -> ~/.codex/sessions
 │       └── ...
 ├── logs/
+├── runs/
+│   └── <run-id>.json
 └── state.json
 ```
 
 - `accounts/<name>/` — per-account auth/config storage
-- `instances/<id>/` — per-run temporary overlay used as `CODEX_HOME`
-- `state.json` — account order, current index, default start account, last successful account, latest session ID
+- `instances/<id>/` — per-run overlay used as `CODEX_HOME` and reused across account switches in that run
+- `runs/<run-id>.json` — current managed process status, bound session ID, and recovery state
+- `state.json` — account order, current index, default start account, last successful account, and the latest successfully bound session ID
 - `logs/` — session logs and terminal transcripts
 
-For each managed run, `codex-auto` creates `~/.codex-auto/instances/<id>/`, symlinks entries from the source `CODEX_HOME`, replaces only `auth.json` with a real copy from the selected account, launches `codex` with that overlay, then removes the overlay when the process exits. This keeps session history, plugins, MCP config, and other Codex state in the original home.
+For each managed run, `codex-auto` creates `~/.codex-auto/instances/<id>/`, symlinks entries from the source `CODEX_HOME`, replaces only `auth.json` with a real copy from the selected account, and keeps reusing that overlay for the lifetime of the managed run. On quota switches it swaps only the overlay's `auth.json`, resumes the already bound session, and removes the overlay when the process exits. This keeps session history, plugins, MCP config, and other Codex state in the original home.
 
 Interactive sessions keep the standard Codex terminal experience, including full-screen and split-pane workflows, while `codex-auto` continues automatic account rotation and session recovery in the background.
 
@@ -217,21 +221,23 @@ When a rate limit is hit:
 
 1. Mark the current account as exhausted
 2. Switch to the next available account
-3. Rebuild the overlay with the next account's `auth.json`
-4. Read the latest session ID from the current overlay
-5. Attempt to resume:
+3. Replace the current run overlay's `auth.json` with the next account
+4. Resume only the session ID already bound to that managed run
+5. Run:
 
 ```bash
 codex resume <session-id> Continue
 ```
 
-6. If the session ID is invalid, fall back to:
-
-```bash
-codex resume --last
-```
+If the current managed run has not safely captured its own session ID yet, or if that bound session ID is no longer available, `codex-auto` stops automatic recovery and surfaces the failure instead of falling back to `codex resume --last`.
 
 To prevent stale transcript interference, only output after the most recent prompt is used for rate-limit detection during recovery.
+
+Concurrent run behavior:
+
+- Multiple `codex-auto` sessions in different terminals for the same project each keep their own recovery binding
+- Multiple `codex-auto` sessions in different terminals for different projects also recover independently
+- Recovery decisions are always scoped to the active managed process, not to the latest project-level or global session
 
 ## Environment Variables
 
@@ -309,7 +315,7 @@ npm pack --json
 ## Known Limitations
 
 - Rate-limit detection relies on known failure messages in terminal output, not official structured events
-- `resume --last` fallback does not re-inject the original prompt; it only restores the session
+- If the underlying `codex` session ID has been lost, `codex-auto` stops automatic recovery instead of falling back to `resume --last`
 - Account rotation is based on local state order, with no weighting, priority, or health checks
 
 ## License

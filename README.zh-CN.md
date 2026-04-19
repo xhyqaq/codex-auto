@@ -24,8 +24,9 @@
 - 支持保存长期生效的默认起始账号
 - 命中额度限制后自动切到下一个账号
 - 列表中可显示仍在等待恢复额度的账号及其恢复时间
-- 优先用记录的 session id 恢复会话
-- session id 失效时回退到 `codex resume --last`
+- 每个活跃受管会话都会绑定自己的恢复目标，支持同项目和跨项目并发运行
+- 切号时只恢复当前受管会话已绑定的 session id，不会改用别的终端里的最新会话
+- 如果无法确认原会话或绑定的 session id 已失效，会停止自动恢复而不是猜测恢复目标
 - 恢复时自动补发 `Continue`
 - 记录运行日志和状态文件
 - 透传所有 `codex` 原始参数和子命令（如 `exec`、`review`、`--model`、`--full-auto`）
@@ -190,24 +191,27 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 │   │   └── meta.json
 │   └── b/
 ├── instances/
-│   └── <timestamp-pid-seq>/
+│   └── <timestamp-pid-uuid>/
 │       ├── auth.json
 │       ├── config.toml -> ~/.codex/config.toml
 │       ├── session_index.jsonl -> ~/.codex/session_index.jsonl
 │       ├── sessions -> ~/.codex/sessions
 │       └── ...
 ├── logs/
+├── runs/
+│   └── <run-id>.json
 └── state.json
 ```
 
 其中：
 
 - `accounts/<name>/` 保存每个账号自己的认证与配置
-- `instances/<id>/` 是每次运行临时创建的 overlay `CODEX_HOME`
-- `state.json` 保存账号顺序、当前索引、默认起始账号、上次成功账号、最近 session id
+- `instances/<id>/` 是每次运行临时创建并在切号时复用的 overlay `CODEX_HOME`
+- `runs/<run-id>.json` 保存当前受管进程自己的账号、session 绑定和恢复状态
+- `state.json` 保存账号顺序、当前索引、默认起始账号、上次成功账号、最近一次成功绑定的 session id
 - `logs/` 保存会话日志和终端 transcript
 
-每次受管运行时，`codex-auto` 都会创建 `~/.codex-auto/instances/<id>/`，把原始 `CODEX_HOME` 中的条目符号链接进去，只把 `auth.json` 替换成当前账号的真实副本，然后用这个 overlay 启动 `codex`。进程退出后 overlay 会被清理，因此会话历史、插件、MCP 配置等仍然保留在原始 home 里。
+每次受管运行时，`codex-auto` 都会创建 `~/.codex-auto/instances/<id>/`，把原始 `CODEX_HOME` 中的条目符号链接进去，只把 `auth.json` 替换成当前账号的真实副本，然后在这次受管运行期间持续复用同一个 overlay。命中额度限制后只替换 overlay 里的 `auth.json` 再恢复原会话，进程退出后 overlay 会被清理，因此会话历史、插件、MCP 配置等仍然保留在原始 home 里。
 
 交互式会话会尽量保持你平时使用 Codex 时的终端体验，包括全屏和分屏场景；同时 `codex-auto` 仍然会在后台监控输出并在额度触发时自动切号、恢复会话。
 
@@ -219,21 +223,23 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 
 1. 标记当前账号已耗尽
 2. 切换到下一个可用账号
-3. 用下一个账号的 `auth.json` 重建 overlay
-4. 从当前 overlay 中读取最新 session id
-5. 优先执行：
+3. 在当前受管进程的 overlay 里替换为下一个账号的 `auth.json`
+4. 只使用当前受管进程已经绑定的 session id 恢复原会话
+5. 执行：
 
 ```bash
 codex resume <session-id> Continue
 ```
 
-6. 如果该 session id 已失效，再回退到：
-
-```bash
-codex resume --last
-```
+如果这次运行还没有安全绑定到自己的 session id，或者该 session id 已失效，`codex-auto` 会停止自动恢复并提示人工处理，而不是回退到 `codex resume --last` 去猜测恢复目标。
 
 为了避免历史 transcript 干扰，恢复场景下只有最新 prompt 之后的新输出才会参与额度检测。
+
+并发运行说明：
+
+- 同一个项目下在多个终端同时运行多个 `codex-auto` 时，每个活跃进程都会维护自己的 session 绑定
+- 不同项目下在多个终端同时运行多个 `codex-auto` 时，也会按各自进程分别恢复
+- 自动切号的恢复目标始终按“当前活跃受管进程”决定，而不是按项目级或全局最新会话决定
 
 ## 环境变量
 
@@ -311,7 +317,7 @@ npm pack --json
 ## 已知限制
 
 - 当前额度检测依赖终端输出中的已知失败提示，不是官方结构化事件
-- `resume --last` fallback 不会额外拼 prompt，只负责先把会话恢复起来
+- 如果底层 `codex` 已经丢失当前活跃会话的 session id，`codex-auto` 会停止自动恢复，不会回退到 `resume --last`
 - 账号切换基于本地状态顺序，不包含权重、优先级和健康检查
 
 ## 许可证

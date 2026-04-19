@@ -44,3 +44,11 @@ export function statePath(appHome: string): string {
 export function logsRoot(appHome: string): string {
   return path.join(appHome, 'logs');
 }
+
+export function runsRoot(appHome: string): string {
+  return path.join(appHome, 'runs');
+}
+
+export function runStatePath(appHome: string, runId: string): string {
+  return path.join(runsRoot(appHome), `${runId}.json`);
+}
