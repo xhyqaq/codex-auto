@@ -22,6 +22,81 @@ const primaryTimestamp = new Date();
 const primaryTimestampIso = primaryTimestamp.toISOString();
 const competingTimestamp = new Date(primaryTimestamp.getTime() + 1000);
 const competingTimestampIso = competingTimestamp.toISOString();
+const delayedSessionWriteMs = Number.parseInt(process.env.FAKE_CODEX_DELAY_SESSION_WRITE_MS ?? '0', 10);
+const primaryRetryAt = process.env.FAKE_CODEX_PRIMARY_RETRY_AT ?? '11:10 PM';
+const oldRetryAt = process.env.FAKE_CODEX_OLD_RETRY_AT ?? '7:37 PM';
+const currentRetryAt = process.env.FAKE_CODEX_CURRENT_RETRY_AT ?? '4:06 PM';
+const quotaAfterPromptDelayMs = Number.parseInt(process.env.FAKE_CODEX_QUOTA_AFTER_PROMPT_DELAY_MS ?? '20', 10);
+const replayOldQuotaDelayMs = Number.parseInt(process.env.FAKE_CODEX_REPLAY_OLD_QUOTA_DELAY_MS ?? '600', 10);
+const livePromptDelayMs = Number.parseInt(process.env.FAKE_CODEX_LIVE_PROMPT_DELAY_MS ?? '1800', 10);
+let pendingAsyncExit = false;
+
+function writeQuotaMessage(retryAt) {
+  process.stdout.write("■ You've hit your usage limit. To get more access now, send a request to your admin.\n");
+  if (retryAt) {
+    process.stdout.write(`or try again at ${retryAt}.\n`);
+  }
+}
+
+function replayHistoricalQuotaBeforePrompt() {
+  if (process.env.FAKE_CODEX_REPLAY_OLD_QUOTA_BEFORE_PROMPT !== '1') {
+    return;
+  }
+
+  writeQuotaMessage(oldRetryAt);
+  process.stdout.write('› \n');
+}
+
+function exitWithQuotaAfterPrompt() {
+  pendingAsyncExit = true;
+  replayHistoricalQuotaBeforePrompt();
+  setTimeout(() => {
+    writeQuotaMessage(currentRetryAt);
+    process.exit(1);
+  }, quotaAfterPromptDelayMs);
+}
+
+function replayStalePromptThenQuotaBeforeLivePrompt() {
+  pendingAsyncExit = true;
+  process.stdout.write('› \n');
+  setTimeout(() => {
+    writeQuotaMessage(oldRetryAt);
+  }, replayOldQuotaDelayMs);
+  setTimeout(() => {
+    process.stdout.write('› \n');
+    process.stdout.write('resumed prompt ready\n');
+    process.exit(0);
+  }, livePromptDelayMs);
+}
+
+function writePrimarySessionArtifacts() {
+  mkdirSync(path.dirname(sessionFilePath), { recursive: true });
+  writeFileSync(
+    sessionFilePath,
+    `${JSON.stringify({
+      timestamp: primaryTimestampIso,
+      type: 'session_meta',
+      payload: {
+        id: sessionId,
+        timestamp: primaryTimestampIso,
+        cwd: process.cwd()
+      }
+    })}\n`,
+    'utf8'
+  );
+
+  if (process.env.FAKE_CODEX_SKIP_SESSION_INDEX !== '1') {
+    writeFileSync(
+      sessionIndexPath,
+      `${JSON.stringify({
+        id: sessionId,
+        thread_name: 'fake-thread',
+        updated_at: primaryTimestampIso
+      })}\n`,
+      'utf8'
+    );
+  }
+}
 
 if (logPath) {
   appendFileSync(logPath, `${JSON.stringify({ args, authText })}\n`, 'utf8');
@@ -33,31 +108,10 @@ if (args[0] === 'login') {
   process.exit(0);
 }
 
-mkdirSync(path.dirname(sessionFilePath), { recursive: true });
-writeFileSync(
-  sessionFilePath,
-  `${JSON.stringify({
-    timestamp: primaryTimestampIso,
-    type: 'session_meta',
-    payload: {
-      id: sessionId,
-      timestamp: primaryTimestampIso,
-      cwd: process.cwd()
-    }
-  })}\n`,
-  'utf8'
-);
-
-if (process.env.FAKE_CODEX_SKIP_SESSION_INDEX !== '1') {
-  writeFileSync(
-    sessionIndexPath,
-    `${JSON.stringify({
-      id: sessionId,
-      thread_name: 'fake-thread',
-      updated_at: primaryTimestampIso
-    })}\n`,
-    'utf8'
-  );
+if (delayedSessionWriteMs > 0) {
+  setTimeout(writePrimarySessionArtifacts, delayedSessionWriteMs);
+} else {
+  writePrimarySessionArtifacts();
 }
 
 const competingSessionId = process.env.FAKE_CODEX_COMPETING_SESSION_ID;
@@ -103,20 +157,32 @@ if (competingSessionId) {
   }
 }
 
+if (process.env.FAKE_CODEX_ENABLE_TTY_MODES === '1') {
+  process.stdout.write('\u001b[?2004h');
+  process.stdout.write('\u001b[>4;2m');
+  process.stdout.write('\u001b[?1h');
+}
+
+if (process.env.FAKE_CODEX_ENABLE_CSI_U_MODE === '1') {
+  process.stdout.write('\u001b[>1u');
+}
+
+let waitingOnQuota = false;
+
 if (authText.includes('"account": "a"') || authText.includes('"account":"a"')) {
   if (process.env.FAKE_CODEX_WAIT_ON_QUOTA === '1') {
     process.stdout.write("■ You've hit your usage limit. To get more access now, send a request to your admin.\n");
     process.stdout.write('Approaching rate limits\n');
     process.stdout.write('Switch to gpt-5.1-codex-mini for lower credit usage?\n');
     setInterval(() => {}, 1000);
+    waitingOnQuota = true;
   } else {
-    process.stdout.write("■ You've hit your usage limit. To get more access now, send a request to your admin.\n");
-    process.stdout.write('or try again at 11:10 PM.\n');
+    writeQuotaMessage(primaryRetryAt);
     process.exit(1);
   }
 }
 
-if (args[0] === 'resume') {
+if (!waitingOnQuota && args[0] === 'resume') {
   const resumeUsesLast = args.includes('--last');
   const positionalArgs = args.slice(1).filter((arg) => !arg.startsWith('--'));
   const sessionId = resumeUsesLast ? 'last' : positionalArgs[0] ?? '';
@@ -134,9 +200,23 @@ if (args[0] === 'resume') {
     process.exit(0);
   }
 
-  process.stdout.write(`Resumed with ${sessionId} ${prompt}\n`);
-  process.exit(0);
+  if (process.env.FAKE_CODEX_RESUME_REPLAYS_STALE_QUOTA_BEFORE_LIVE_PROMPT === '1') {
+    replayStalePromptThenQuotaBeforeLivePrompt();
+  } else
+  if (process.env.FAKE_CODEX_EMIT_QUOTA_AFTER_PROMPT === '1') {
+    exitWithQuotaAfterPrompt();
+  } else {
+    process.stdout.write(`Resumed with ${sessionId} ${prompt}\n`);
+    process.exit(0);
+  }
 }
 
-process.stdout.write('session started\n');
-process.exit(0);
+if (!waitingOnQuota && !pendingAsyncExit) {
+  if (process.env.FAKE_CODEX_EMIT_QUOTA_AFTER_PROMPT === '1') {
+    exitWithQuotaAfterPrompt();
+  } else {
+    replayHistoricalQuotaBeforePrompt();
+    process.stdout.write('session started\n');
+    process.exit(0);
+  }
+}

@@ -43,9 +43,25 @@ export function sanitizeTerminalOutput(output: string): string {
     .replace(/\u0000/g, '');
 }
 
-export function hasPromptMarker(output: string): boolean {
+export function getOutputSinceLatestPrompt(output: string): string | null {
+  const normalized = sanitizeTerminalOutput(output);
   promptPattern.lastIndex = 0;
-  return promptPattern.test(sanitizeTerminalOutput(output));
+
+  let lastMatch: RegExpExecArray | null = null;
+  let nextMatch: RegExpExecArray | null;
+  while ((nextMatch = promptPattern.exec(normalized)) !== null) {
+    lastMatch = nextMatch;
+  }
+
+  if (!lastMatch) {
+    return null;
+  }
+
+  return normalized.slice(lastMatch.index + lastMatch[0].length);
+}
+
+export function hasPromptMarker(output: string): boolean {
+  return getOutputSinceLatestPrompt(output) !== null;
 }
 
 export function hasQuotaError(output: string): boolean {

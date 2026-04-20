@@ -20,12 +20,14 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 - Bootstrap a `default` account from your existing Codex setup on first run
 - Import existing `auth.json` and `config.toml` files
 - Launch managed `codex` sessions
-- Keep interactive Codex sessions usable in normal terminal workflows
+- Keep interactive Codex sessions usable in normal terminal workflows, including clean shell input after automatic rotation or forced stops
 - Save a default start account for future runs
 - Automatically switch to the next account on rate limit
 - Show retry times for accounts that are still waiting for quota to reset
 - Bind each active managed session to its own recovery target across same-project and cross-project concurrent runs
 - Resume only the session ID already bound to the current managed run instead of guessing from the latest session
+- Give a fresh interactive run a brief chance to capture its own recovery target before automatic recovery is abandoned
+- If you cancel an interactive quota prompt with `Ctrl-C`, exit that managed run cleanly instead of forcing an exhausted-accounts flow
 - Stop automatic recovery when the original session cannot be confirmed or its session ID is no longer valid
 - Automatically send `Continue` on resume
 - Log sessions and terminal transcripts
@@ -211,7 +213,7 @@ Directory structure:
 
 For each managed run, `codex-auto` creates `~/.codex-auto/instances/<id>/`, symlinks entries from the source `CODEX_HOME`, replaces only `auth.json` with a real copy from the selected account, and keeps reusing that overlay for the lifetime of the managed run. On quota switches it swaps only the overlay's `auth.json`, resumes the already bound session, and removes the overlay when the process exits. This keeps session history, plugins, MCP config, and other Codex state in the original home.
 
-Interactive sessions keep the standard Codex terminal experience, including full-screen and split-pane workflows, while `codex-auto` continues automatic account rotation and session recovery in the background.
+Interactive sessions keep the standard Codex terminal experience, including full-screen and split-pane workflows, while `codex-auto` continues automatic account rotation and session recovery in the background and returns control to your shell in a normal input state after a forced stop or quota-driven switch.
 
 ## Account Switching & Session Recovery
 
@@ -229,9 +231,11 @@ When a rate limit is hit:
 codex resume <session-id> Continue
 ```
 
-If the current managed run has not safely captured its own session ID yet, or if that bound session ID is no longer available, `codex-auto` stops automatic recovery and surfaces the failure instead of falling back to `codex resume --last`.
+If a fresh interactive run has already reached a live prompt but its recovery target is still catching up, `codex-auto` gives that run a short window to capture its own session ID before surfacing a recovery failure. If the current managed run still has not safely captured its own session ID, or if that bound session ID is no longer available, `codex-auto` stops automatic recovery and surfaces the failure instead of falling back to `codex resume --last`.
 
-To prevent stale transcript interference, only output after the most recent prompt is used for rate-limit detection during recovery.
+If an interactive quota prompt is already on screen and you press `Ctrl-C`, `codex-auto` treats that as a user cancel for the current managed run. It restores the terminal state and exits cleanly instead of continuing into automatic exhausted-account handling.
+
+To prevent stale transcript interference, rate-limit detection switches to only the output after the most recent live prompt once startup or recovery has reached that prompt.
 
 Concurrent run behavior:
 

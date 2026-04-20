@@ -17,8 +17,14 @@ class TtyCaptureStream extends Writable {
   override isTTY = true;
   override columns = 120;
   override rows = 40;
+  private readonly chunks: string[] = [];
 
-  override _write(_chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+  text(): string {
+    return this.chunks.join('');
+  }
+
+  override _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.chunks.push(chunk.toString());
     callback();
   }
 }
@@ -315,6 +321,52 @@ describe('managed session runner', () => {
     }
   });
 
+  test('ignores historical quota text that appears before the latest prompt on first launch', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['plus'],
+        currentIndex: 0,
+        preferredAccountName: 'plus',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'plus', { account: 'plus', token: 'plus-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_REPLAY_OLD_QUOTA_BEFORE_PROMPT: '1',
+          FAKE_CODEX_OLD_RETRY_AT: '4:06 PM'
+        },
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(0);
+      expect(result.finalAccount).toBe('plus');
+      expect(result.exhaustedAll).toBe(false);
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        currentIndex: 0,
+        lastSuccessfulAccount: 'plus',
+        retryAvailabilityByAccount: {}
+      });
+      await expect(readFile(logPath, 'utf8')).resolves.not.toContain('"args":["resume"');
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
   test('ignores historical quota text that appears before the latest prompt on resume', async () => {
     const appHome = await createTempAppHome();
     const codexHome = await createTempAppHome('codex-home-');
@@ -356,6 +408,116 @@ describe('managed session runner', () => {
       await expect(loadState(appHome)).resolves.toMatchObject({
         currentIndex: 1,
         lastSuccessfulAccount: 'b'
+      });
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('does not treat a stale replayed prompt plus delayed old quota text as a fresh resume quota', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SESSION_ID: 'session-live-prompt',
+          FAKE_CODEX_PRIMARY_RETRY_AT: '7:37 PM',
+          FAKE_CODEX_RESUME_REPLAYS_STALE_QUOTA_BEFORE_LIVE_PROMPT: '1',
+          FAKE_CODEX_OLD_RETRY_AT: '7:37 PM',
+          FAKE_CODEX_REPLAY_OLD_QUOTA_DELAY_MS: '500',
+          FAKE_CODEX_LIVE_PROMPT_DELAY_MS: '1800'
+        },
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+      expect(result.exhaustedAll).toBe(false);
+      expect(result.exitCode).toBe(0);
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        currentIndex: 1,
+        lastSuccessfulAccount: 'b',
+        retryAvailabilityByAccount: {
+          a: {
+            displayText: '7:37 PM'
+          }
+        }
+      });
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('records retry time from the latest quota prompt instead of replayed historical output on resume', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SESSION_ID: 'session-retry-current',
+          FAKE_CODEX_PRIMARY_RETRY_AT: '7:37 PM',
+          FAKE_CODEX_REPLAY_OLD_QUOTA_BEFORE_PROMPT: '1',
+          FAKE_CODEX_OLD_RETRY_AT: '7:37 PM',
+          FAKE_CODEX_EMIT_QUOTA_AFTER_PROMPT: '1',
+          FAKE_CODEX_CURRENT_RETRY_AT: '4:06 PM'
+        },
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+      expect(result.exhaustedAll).toBe(true);
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        retryAvailabilityByAccount: {
+          a: {
+            displayText: '7:37 PM'
+          },
+          b: {
+            displayText: '4:06 PM'
+          }
+        }
       });
     } finally {
       await cleanupTempDir(appHome);
@@ -527,6 +689,162 @@ process.exit(0);
           }
         }
       });
+    } finally {
+      stdin.end();
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('interactive mode waits briefly for the bound session id to be persisted before rotating', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex-interactive.log');
+    const stdout = new TtyCaptureStream();
+    const stderr = new TtyCaptureStream();
+    const stdin = new TtyInputStream() as TtyInputStream & NodeJS.ReadStream;
+
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SESSION_ID: 'interactive-delayed-session',
+          FAKE_CODEX_DELAY_SESSION_WRITE_MS: '150',
+          FAKE_CODEX_WAIT_ON_QUOTA: '1'
+        },
+        stdin,
+        stdout,
+        stderr,
+        interactive: true
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+      await expect(readFile(logPath, 'utf8')).resolves.toContain(
+        '"args":["resume","--no-alt-screen","interactive-delayed-session","Continue"]'
+      );
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        lastSessionId: 'interactive-delayed-session'
+      });
+    } finally {
+      stdin.end();
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('interactive mode restores terminal modes before returning control after a forced quota stop', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const stdout = new TtyCaptureStream();
+    const stderr = new TtyCaptureStream();
+    const stdin = new TtyInputStream() as TtyInputStream & NodeJS.ReadStream;
+
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_ENABLE_TTY_MODES: '1',
+          FAKE_CODEX_ENABLE_CSI_U_MODE: '1',
+          FAKE_CODEX_WAIT_ON_QUOTA: '1'
+        },
+        stdin,
+        stdout,
+        stderr,
+        interactive: true
+      });
+
+      expect(result.exhaustedAll).toBe(true);
+      expect(stdout.text()).toContain('\u001b[?2004l');
+      expect(stdout.text()).toContain('\u001b[>4;0m');
+      expect(stdout.text()).toContain('\u001b[?1l');
+      expect(stdout.text()).toContain('\u001b[<u');
+    } finally {
+      stdin.end();
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('interactive mode treats Ctrl-C during a quota prompt as a user interrupt instead of exhausting accounts', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const stdout = new TtyCaptureStream();
+    const stderr = new TtyCaptureStream();
+    const stdin = new TtyInputStream() as TtyInputStream & NodeJS.ReadStream;
+
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+
+      setTimeout(() => {
+        stdin.write('\u0003');
+      }, 100);
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_ENABLE_TTY_MODES: '1',
+          FAKE_CODEX_WAIT_ON_QUOTA: '1'
+        },
+        stdin,
+        stdout,
+        stderr,
+        interactive: true
+      });
+
+      expect(result.exhaustedAll).toBe(false);
+      expect(stderr.text()).not.toContain('All configured accounts are exhausted');
+      expect(stderr.text()).not.toContain('and resuming');
+      expect(stdout.text()).toContain('\u001b[?2004l');
+      expect(stdout.text()).toContain('\u001b[>4;0m');
     } finally {
       stdin.end();
       await cleanupTempDir(appHome);

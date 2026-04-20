@@ -6,7 +6,7 @@ import { spawn as spawnPty } from 'node-pty';
 import path from 'node:path';
 import { createSessionLogger } from './logger.js';
 import { buildCodexShellCommand, resolveCodexCommand } from './codex-bin.js';
-import { extractQuotaRetryAvailability, hasPromptMarker, hasQuotaError, sanitizeTerminalOutput } from './detection.js';
+import { extractQuotaRetryAvailability, getOutputSinceLatestPrompt, hasQuotaError, sanitizeTerminalOutput } from './detection.js';
 import { markAccountUsed } from './accounts.js';
 import { readTextIfExists } from './fs.js';
 import { accountAuthPath, instanceHome, resolveCodexHome } from './paths.js';
@@ -64,7 +64,31 @@ type InvocationResult = {
   quotaError: boolean;
   output: string;
   retryAvailability: RetryAvailability | null;
+  interrupted: boolean;
 };
+
+const interactiveQuotaShutdownGraceMs = 250;
+const prePromptQuotaDecisionGraceMs = 150;
+const postPromptQuotaConfirmationMs = 5_000;
+const sessionDiscoveryPollIntervalMs = 50;
+const sessionDiscoveryTimeoutOnQuotaMs = 1_000;
+const terminalRestoreSequence = [
+  '\u001b[?1l',
+  '\u001b[<u',
+  '\u001b[>4;0m',
+  '\u001b[?2004l',
+  '\u001b[?1000l',
+  '\u001b[?1002l',
+  '\u001b[?1003l',
+  '\u001b[?1004l',
+  '\u001b[?1005l',
+  '\u001b[?1006l',
+  '\u001b[?1015l',
+  '\u001b[?1047l',
+  '\u001b[?1049l',
+  '\u001b[?25h',
+  '\u001b>'
+].join('');
 
 function canUseInteractiveTerminal(
   stdin: NodeJS.ReadStream,
@@ -85,6 +109,20 @@ function getTerminalSize(stdout: OutputLike): { cols: number; rows: number } {
     cols: Math.max(1, stdout.columns ?? 80),
     rows: Math.max(1, stdout.rows ?? 24)
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function restoreTerminalModes(stdout: OutputLike): void {
+  if (!stdout.isTTY) {
+    return;
+  }
+
+  stdout.write(terminalRestoreSequence);
 }
 
 function enterRawMode(stdin: NodeJS.ReadStream): (() => void) | null {
@@ -247,6 +285,29 @@ async function discoverSessionId(options: {
   return selectBestSessionCandidate(newIndexCandidates, options.workspaceDir, options.launchStartedAt);
 }
 
+async function waitForSessionId(options: {
+  instanceDir: string;
+  workspaceDir: string;
+  launchStartedAt: number;
+  knownSessionIds: Set<string>;
+  timeoutMs: number;
+}): Promise<string | null> {
+  const deadline = Date.now() + Math.max(0, options.timeoutMs);
+
+  while (true) {
+    const discovered = await discoverSessionId(options);
+    if (discovered) {
+      return discovered;
+    }
+
+    if (Date.now() >= deadline) {
+      return null;
+    }
+
+    await sleep(sessionDiscoveryPollIntervalMs);
+  }
+}
+
 async function collectSessionFiles(root: string): Promise<string[]> {
   try {
     const entries = await readdir(root, { withFileTypes: true });
@@ -320,21 +381,48 @@ async function launchInvocation(options: {
   const command = buildCodexShellCommand(options.codexCommand, options.args);
   const shell = options.env.SHELL || '/bin/zsh';
   const stdout = options.stdout;
-  const deferQuotaDetectionUntilPrompt = options.args[0] === 'resume';
   let sanitizedOutput = '';
-  let quotaDetectionArmed = !deferQuotaDetectionUntilPrompt;
-  let quotaDetectionStartIndex = 0;
+  let quotaRelevantOutput = '';
+  let pendingPrePromptQuotaTimer: NodeJS.Timeout | null = null;
+  let pendingPostPromptQuotaTimer: NodeJS.Timeout | null = null;
 
-  const evaluateQuotaOutput = (output: string): boolean => {
-    if (!quotaDetectionArmed) {
-      if (hasPromptMarker(output)) {
-        quotaDetectionArmed = true;
-        quotaDetectionStartIndex = output.length;
-      }
-      return false;
+  const clearPendingPrePromptQuotaTimer = (): void => {
+    if (!pendingPrePromptQuotaTimer) {
+      return;
     }
 
-    return hasQuotaError(output.slice(quotaDetectionStartIndex));
+    clearTimeout(pendingPrePromptQuotaTimer);
+    pendingPrePromptQuotaTimer = null;
+  };
+
+  const clearPendingPostPromptQuotaTimer = (): void => {
+    if (!pendingPostPromptQuotaTimer) {
+      return;
+    }
+
+    clearTimeout(pendingPostPromptQuotaTimer);
+    pendingPostPromptQuotaTimer = null;
+  };
+
+  const evaluateQuotaOutput = (): {
+    quotaError: boolean;
+    sawPrompt: boolean;
+    relevantOutput: string;
+  } => {
+    const outputSinceLatestPrompt = getOutputSinceLatestPrompt(sanitizedOutput);
+    if (outputSinceLatestPrompt !== null) {
+      return {
+        quotaError: hasQuotaError(outputSinceLatestPrompt),
+        sawPrompt: true,
+        relevantOutput: outputSinceLatestPrompt
+      };
+    }
+
+    return {
+      quotaError: hasQuotaError(sanitizedOutput),
+      sawPrompt: false,
+      relevantOutput: sanitizedOutput
+    };
   };
 
   if (options.interactive) {
@@ -354,7 +442,8 @@ async function launchInvocation(options: {
             exitCode: 1,
             quotaError: false,
             output: error.message,
-            retryAvailability: null
+            retryAvailability: null,
+            interrupted: false
           });
         });
 
@@ -363,7 +452,8 @@ async function launchInvocation(options: {
             exitCode: code ?? 1,
             quotaError: false,
             output: '',
-            retryAvailability: null
+            retryAvailability: null,
+            interrupted: false
           });
         });
       });
@@ -380,9 +470,36 @@ async function launchInvocation(options: {
       }
     });
     let quotaDetected = false;
+    let quotaShutdownTimer: NodeJS.Timeout | null = null;
+    let interrupted = false;
+
+    const stopPtyForQuota = (): void => {
+      if (quotaShutdownTimer) {
+        return;
+      }
+
+      quotaShutdownTimer = setTimeout(() => {
+        ptyProcess.kill('SIGTERM');
+      }, interactiveQuotaShutdownGraceMs);
+    };
 
     const stdinDataHandler = (chunk: Buffer | string): void => {
-      ptyProcess.write(chunk.toString());
+      const input = chunk.toString();
+      if (quotaDetected || pendingPrePromptQuotaTimer || pendingPostPromptQuotaTimer) {
+        if (!interrupted && input.includes('\u0003')) {
+          interrupted = true;
+          clearPendingPrePromptQuotaTimer();
+          clearPendingPostPromptQuotaTimer();
+          if (quotaShutdownTimer) {
+            clearTimeout(quotaShutdownTimer);
+            quotaShutdownTimer = null;
+          }
+          ptyProcess.kill('SIGINT');
+        }
+        return;
+      }
+
+      ptyProcess.write(input);
     };
     const stdoutResizeHandler = (): void => {
       const nextSize = getTerminalSize(stdout);
@@ -393,15 +510,69 @@ async function launchInvocation(options: {
     stdout.on('resize', stdoutResizeHandler);
     const restoreTerminal = enterRawMode(options.stdin);
 
-    const dataDisposable = ptyProcess.onData((data) => {
-      stdout.write(data);
-      sanitizedOutput = `${sanitizedOutput}${sanitizeTerminalOutput(data)}`.slice(-20000);
-      if (quotaDetected || !evaluateQuotaOutput(sanitizedOutput)) {
+    const handlePotentialQuota = (): void => {
+      if (quotaDetected) {
         return;
       }
 
-      quotaDetected = true;
-      ptyProcess.kill();
+      const evaluation = evaluateQuotaOutput();
+      if (evaluation.sawPrompt) {
+        clearPendingPrePromptQuotaTimer();
+        if (!evaluation.quotaError) {
+          clearPendingPostPromptQuotaTimer();
+          return;
+        }
+
+        clearPendingPostPromptQuotaTimer();
+        pendingPostPromptQuotaTimer = setTimeout(() => {
+          pendingPostPromptQuotaTimer = null;
+          if (quotaDetected) {
+            return;
+          }
+
+          const confirmedEvaluation = evaluateQuotaOutput();
+          if (!confirmedEvaluation.sawPrompt || !confirmedEvaluation.quotaError) {
+            return;
+          }
+
+          quotaDetected = true;
+          quotaRelevantOutput = confirmedEvaluation.relevantOutput;
+          stopPtyForQuota();
+        }, postPromptQuotaConfirmationMs);
+        return;
+      }
+
+      clearPendingPostPromptQuotaTimer();
+      if (!evaluation.quotaError) {
+        clearPendingPrePromptQuotaTimer();
+        return;
+      }
+
+      if (pendingPrePromptQuotaTimer) {
+        return;
+      }
+
+      pendingPrePromptQuotaTimer = setTimeout(() => {
+        pendingPrePromptQuotaTimer = null;
+        if (quotaDetected) {
+          return;
+        }
+
+        const delayedEvaluation = evaluateQuotaOutput();
+        if (delayedEvaluation.sawPrompt || !delayedEvaluation.quotaError) {
+          return;
+        }
+
+        quotaDetected = true;
+        quotaRelevantOutput = delayedEvaluation.relevantOutput;
+        stopPtyForQuota();
+      }, prePromptQuotaDecisionGraceMs);
+    };
+
+    const dataDisposable = ptyProcess.onData((data) => {
+      stdout.write(data);
+      sanitizedOutput = `${sanitizedOutput}${sanitizeTerminalOutput(data)}`.slice(-20000);
+      handlePotentialQuota();
     });
 
     return new Promise<InvocationResult>((resolve) => {
@@ -411,11 +582,24 @@ async function launchInvocation(options: {
         options.stdin.off('data', stdinDataHandler);
         stdout.off('resize', stdoutResizeHandler);
         restoreTerminal?.();
+        clearPendingPrePromptQuotaTimer();
+        clearPendingPostPromptQuotaTimer();
+        if (quotaShutdownTimer) {
+          clearTimeout(quotaShutdownTimer);
+        }
+        restoreTerminalModes(stdout);
+        const finalEvaluation = quotaDetected
+          ? {
+              quotaError: true,
+              relevantOutput: quotaRelevantOutput
+            }
+          : evaluateQuotaOutput();
         resolve({
           exitCode,
-          quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
+          quotaError: finalEvaluation.quotaError,
           output: sanitizedOutput,
-          retryAvailability: quotaDetected ? extractQuotaRetryAvailability(sanitizedOutput) : null
+          retryAvailability: finalEvaluation.quotaError ? extractQuotaRetryAvailability(finalEvaluation.relevantOutput) : null,
+          interrupted
         });
       });
     });
@@ -432,12 +616,62 @@ async function launchInvocation(options: {
   let quotaDetected = false;
 
   const triggerQuotaRotation = (): void => {
-    if (quotaDetected || !evaluateQuotaOutput(sanitizedOutput)) {
+    if (quotaDetected) {
       return;
     }
 
-    quotaDetected = true;
-    child.kill('SIGTERM');
+    const evaluation = evaluateQuotaOutput();
+    if (evaluation.sawPrompt) {
+      clearPendingPrePromptQuotaTimer();
+      if (!evaluation.quotaError) {
+        clearPendingPostPromptQuotaTimer();
+        return;
+      }
+
+      clearPendingPostPromptQuotaTimer();
+      pendingPostPromptQuotaTimer = setTimeout(() => {
+        pendingPostPromptQuotaTimer = null;
+        if (quotaDetected) {
+          return;
+        }
+
+        const confirmedEvaluation = evaluateQuotaOutput();
+        if (!confirmedEvaluation.sawPrompt || !confirmedEvaluation.quotaError) {
+          return;
+        }
+
+        quotaDetected = true;
+        quotaRelevantOutput = confirmedEvaluation.relevantOutput;
+        child.kill('SIGTERM');
+      }, postPromptQuotaConfirmationMs);
+      return;
+    }
+
+    clearPendingPostPromptQuotaTimer();
+    if (!evaluation.quotaError) {
+      clearPendingPrePromptQuotaTimer();
+      return;
+    }
+
+    if (pendingPrePromptQuotaTimer) {
+      return;
+    }
+
+    pendingPrePromptQuotaTimer = setTimeout(() => {
+      pendingPrePromptQuotaTimer = null;
+      if (quotaDetected) {
+        return;
+      }
+
+      const delayedEvaluation = evaluateQuotaOutput();
+      if (delayedEvaluation.sawPrompt || !delayedEvaluation.quotaError) {
+        return;
+      }
+
+      quotaDetected = true;
+      quotaRelevantOutput = delayedEvaluation.relevantOutput;
+      child.kill('SIGTERM');
+    }, prePromptQuotaDecisionGraceMs);
   };
 
   child.stdout?.on('data', (chunk: Buffer | string) => {
@@ -456,20 +690,38 @@ async function launchInvocation(options: {
 
   return new Promise<InvocationResult>((resolve) => {
     child.on('error', (error) => {
+      clearPendingPrePromptQuotaTimer();
+      clearPendingPostPromptQuotaTimer();
+      const finalEvaluation = quotaDetected
+        ? {
+            quotaError: true,
+            relevantOutput: quotaRelevantOutput
+          }
+        : evaluateQuotaOutput();
       resolve({
         exitCode: 1,
-        quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
+        quotaError: finalEvaluation.quotaError,
         output: `${sanitizedOutput}\n${error.message}`,
-        retryAvailability: quotaDetected ? extractQuotaRetryAvailability(sanitizedOutput) : null
+        retryAvailability: finalEvaluation.quotaError ? extractQuotaRetryAvailability(finalEvaluation.relevantOutput) : null,
+        interrupted: false
       });
     });
 
     child.on('close', (code) => {
+      clearPendingPrePromptQuotaTimer();
+      clearPendingPostPromptQuotaTimer();
+      const finalEvaluation = quotaDetected
+        ? {
+            quotaError: true,
+            relevantOutput: quotaRelevantOutput
+          }
+        : evaluateQuotaOutput();
       resolve({
         exitCode: code ?? 1,
-        quotaError: quotaDetected || evaluateQuotaOutput(sanitizedOutput),
+        quotaError: finalEvaluation.quotaError,
         output: sanitizedOutput,
-        retryAvailability: quotaDetected ? extractQuotaRetryAvailability(sanitizedOutput) : null
+        retryAvailability: finalEvaluation.quotaError ? extractQuotaRetryAvailability(finalEvaluation.relevantOutput) : null,
+        interrupted: false
       });
     });
   });
@@ -549,7 +801,7 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
 
       const firstRunArgs = buildFirstRunArgs(options.extraArgs ?? []);
 
-      const result = firstRun
+      const result: InvocationResult = firstRun
         ? await launchInvocation({
             appHome: options.appHome,
             instanceDir,
@@ -574,11 +826,12 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
           });
 
       const discoveredSessionId: string | null = firstRun && !lastSessionId
-        ? await discoverSessionId({
+        ? await waitForSessionId({
             instanceDir,
             workspaceDir: options.workspaceDir,
             launchStartedAt,
-            knownSessionIds
+            knownSessionIds,
+            timeoutMs: interactive && result.quotaError ? sessionDiscoveryTimeoutOnQuotaMs : 0
           })
         : null;
       if (discoveredSessionId && !lastSessionId) {
@@ -614,6 +867,34 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
           finalAccount: current.name,
           switchCount,
           exitCode: result.exitCode || 1,
+          exhaustedAll: false
+        };
+      }
+
+      if (result.interrupted) {
+        const latestState = await loadState(options.appHome);
+        latestState.currentIndex = current.index;
+        latestState.lastSessionId = lastSessionId;
+        if (result.retryAvailability) {
+          latestState.retryAvailabilityByAccount[current.name] = result.retryAvailability;
+        }
+        await saveState(options.appHome, latestState);
+        await logger.log('interrupt', { account: current.name, exitCode: result.exitCode, instanceId });
+        await writeManagedRunState(options.appHome, {
+          runId,
+          pid: process.pid,
+          workspaceDir: options.workspaceDir,
+          startedAt: runStartedAt,
+          status: 'exited',
+          currentAccount: current.name,
+          currentSessionId: lastSessionId,
+          sessionBindingLost
+        });
+
+        return {
+          finalAccount: current.name,
+          switchCount,
+          exitCode: result.exitCode || 130,
           exhaustedAll: false
         };
       }

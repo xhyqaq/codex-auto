@@ -20,12 +20,14 @@
 - 首次运行时可从现有 Codex 登录态自动引导 `default` 账号
 - 支持导入现成的 `auth.json` 和 `config.toml`
 - 启动受管 `codex` 会话
-- 交互模式保持接近日常终端里的 Codex 使用体验
+- 交互模式保持接近日常终端里的 Codex 使用体验，自动切号或强制结束后也能把 shell 输入状态恢复正常
 - 支持保存长期生效的默认起始账号
 - 命中额度限制后自动切到下一个账号
 - 列表中可显示仍在等待恢复额度的账号及其恢复时间
 - 每个活跃受管会话都会绑定自己的恢复目标，支持同项目和跨项目并发运行
 - 切号时只恢复当前受管会话已绑定的 session id，不会改用别的终端里的最新会话
+- 对刚刚进入交互态的新会话，会先给当前运行一个很短的恢复目标确认窗口，再决定是否放弃自动恢复
+- 如果你在交互式额度提示阶段按 `Ctrl-C`，会把这次受管运行按用户取消干净退出，而不是继续走账号耗尽流程
 - 如果无法确认原会话或绑定的 session id 已失效，会停止自动恢复而不是猜测恢复目标
 - 恢复时自动补发 `Continue`
 - 记录运行日志和状态文件
@@ -213,7 +215,7 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 
 每次受管运行时，`codex-auto` 都会创建 `~/.codex-auto/instances/<id>/`，把原始 `CODEX_HOME` 中的条目符号链接进去，只把 `auth.json` 替换成当前账号的真实副本，然后在这次受管运行期间持续复用同一个 overlay。命中额度限制后只替换 overlay 里的 `auth.json` 再恢复原会话，进程退出后 overlay 会被清理，因此会话历史、插件、MCP 配置等仍然保留在原始 home 里。
 
-交互式会话会尽量保持你平时使用 Codex 时的终端体验，包括全屏和分屏场景；同时 `codex-auto` 仍然会在后台监控输出并在额度触发时自动切号、恢复会话。
+交互式会话会尽量保持你平时使用 Codex 时的终端体验，包括全屏和分屏场景；同时 `codex-auto` 仍然会在后台监控输出并在额度触发时自动切号、恢复会话，并在强制结束或切号后把控制权交还给一个输入状态正常的 shell。
 
 ## 切号与恢复逻辑
 
@@ -231,9 +233,11 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 codex resume <session-id> Continue
 ```
 
-如果这次运行还没有安全绑定到自己的 session id，或者该 session id 已失效，`codex-auto` 会停止自动恢复并提示人工处理，而不是回退到 `codex resume --last` 去猜测恢复目标。
+如果一个刚进入交互态的新会话只是恢复目标稍晚才可见，`codex-auto` 会先给这次运行一个很短的确认窗口，再决定是否报恢复失败。如果这次运行最终仍没有安全绑定到自己的 session id，或者该 session id 已失效，`codex-auto` 会停止自动恢复并提示人工处理，而不是回退到 `codex resume --last` 去猜测恢复目标。
 
-为了避免历史 transcript 干扰，恢复场景下只有最新 prompt 之后的新输出才会参与额度检测。
+如果交互式额度提示已经出现，而你主动按 `Ctrl-C` 取消这次运行，`codex-auto` 会把它视为用户中断：优先恢复终端状态并直接退出，不再继续走“所有账号都已耗尽”的自动处理分支。
+
+为了避免历史 transcript 干扰，一旦启动或恢复已经进入当前这次运行的最新 prompt，后续额度检测就只看这个 prompt 之后的新输出。
 
 并发运行说明：
 
