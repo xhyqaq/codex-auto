@@ -1,7 +1,27 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 export function resolveCodexCommand(env: NodeJS.ProcessEnv = process.env): string {
-  return env.CODEX_AUTO_CODEX_BIN?.trim() || 'codex';
+  const explicit = env.CODEX_AUTO_CODEX_BIN?.trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  // Resolve the full path to `codex` using the current environment's PATH so that
+  // spawning through a login shell (`zsh -lc`) does not pick up a stale installation
+  // from a different PATH entry order.
+  try {
+    const resolved = execFileSync('which', ['codex'], {
+      encoding: 'utf8',
+      env: { PATH: env.PATH ?? process.env.PATH }
+    }).trim();
+    if (resolved) {
+      return resolved;
+    }
+  } catch {
+    // fall through to bare name
+  }
+
+  return 'codex';
 }
 
 function shellQuote(value: string): string {

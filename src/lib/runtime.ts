@@ -45,6 +45,11 @@ export async function createInstanceOverlay(
 
   const overlayEntries = new Set<string>(await readdir(codexHome));
   overlayEntries.delete('auth.json');
+  // models_cache.json must not be symlinked: codex updates it with atomic writes
+  // (temp file + rename) which replaces the symlink with a real file in the instance,
+  // leaving the original permanently stale. Excluding it lets codex recreate it fresh
+  // with the correct client_version each run.
+  overlayEntries.delete('models_cache.json');
 
   for (const entry of overlayEntries) {
     const target = path.join(codexHome, entry);
