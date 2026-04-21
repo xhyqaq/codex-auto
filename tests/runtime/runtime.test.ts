@@ -46,4 +46,24 @@ describe('runtime overlay', () => {
       await cleanupTempDir(codexHome);
     }
   });
+
+  test('createInstanceOverlay initializes missing shared session storage when source CODEX_HOME does not exist yet', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = path.join(appHome, 'missing-codex-home');
+    try {
+      await seedAccount(appHome, 'alpha', { token: 'token', account: 'alpha' });
+      const instanceDir = instanceHome(appHome, 'bootstrap-instance');
+
+      await createInstanceOverlay(codexHome, instanceDir, accountAuthPath(appHome, 'alpha'));
+
+      expect(await readFile(path.join(codexHome, 'session_index.jsonl'), 'utf8')).toBe('');
+      expect((await lstat(path.join(codexHome, 'sessions'))).isDirectory()).toBe(true);
+      expect((await lstat(path.join(instanceDir, 'session_index.jsonl'))).isSymbolicLink()).toBe(true);
+      expect(await readlink(path.join(instanceDir, 'session_index.jsonl'))).toBe(path.join(codexHome, 'session_index.jsonl'));
+      expect((await lstat(path.join(instanceDir, 'sessions'))).isSymbolicLink()).toBe(true);
+      expect(await readlink(path.join(instanceDir, 'sessions'))).toBe(path.join(codexHome, 'sessions'));
+    } finally {
+      await cleanupTempDir(appHome);
+    }
+  });
 });

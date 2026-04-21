@@ -19,6 +19,7 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 - Run `codex login` automatically when adding a new account
 - Bootstrap a `default` account from your existing Codex setup on first run
 - Import existing `auth.json` and `config.toml` files
+- Start managed runs even when the source `CODEX_HOME` has not been initialized yet
 - Launch managed `codex` sessions
 - Keep interactive Codex sessions usable in normal terminal workflows, including clean shell input after automatic rotation or forced stops
 - Save a default start account for future runs

@@ -1,6 +1,14 @@
 import { describe, expect, test, vi } from 'vitest';
 import { extractQuotaRetryAvailability, hasQuotaError } from '../../src/lib/detection.js';
 
+function formatMeridiemTime(date: Date): string {
+  const hours24 = date.getHours();
+  const hours12 = hours24 % 12 || 12;
+  const minutes = `${date.getMinutes()}`.padStart(2, '0');
+  const period = hours24 >= 12 ? 'PM' : 'AM';
+  return `${hours12}:${minutes} ${period}`;
+}
+
 describe('quota detection', () => {
   test('detects the observed codex quota exhaustion prompt', () => {
     expect(
@@ -36,14 +44,18 @@ describe('quota detection', () => {
 
   test('extracts the retry time string and a comparable timestamp from quota text', () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-04-18T08:00:00.000Z'));
+    const now = new Date('2026-04-18T08:00:00.000Z');
+    vi.setSystemTime(now);
     try {
+      const nextRetry = new Date(now);
+      nextRetry.setHours(now.getHours() + 1, 10, 0, 0);
+      const displayText = formatMeridiemTime(nextRetry);
       const result = extractQuotaRetryAvailability(
-        "■ You've hit your usage limit. To get more access now, send a request to your admin.\nor try again at 11:10 PM."
+        `■ You've hit your usage limit. To get more access now, send a request to your admin.\nor try again at ${displayText}.`
       );
 
-      expect(result?.displayText).toBe('11:10 PM');
-      expect(result?.availableAt).toMatch(/2026-04-18T/);
+      expect(result?.displayText).toBe(displayText);
+      expect(result?.availableAt).toBe(nextRetry.toISOString());
     } finally {
       vi.useRealTimers();
     }
@@ -51,14 +63,23 @@ describe('quota detection', () => {
 
   test('rolls retry time to the next day when the same-day time has already passed', () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-04-18T15:30:00.000Z'));
+    const now = new Date('2026-04-18T15:30:00.000Z');
+    vi.setSystemTime(now);
     try {
+      const previousRetry = new Date(now);
+      previousRetry.setHours(now.getHours() - 1, 10, 0, 0);
+      const displayText = formatMeridiemTime(previousRetry);
+      const expectedAvailableAt = new Date(now);
+      expectedAvailableAt.setHours(previousRetry.getHours(), previousRetry.getMinutes(), 0, 0);
+      if (expectedAvailableAt.getTime() <= now.getTime()) {
+        expectedAvailableAt.setDate(expectedAvailableAt.getDate() + 1);
+      }
       const result = extractQuotaRetryAvailability(
-        "■ You've hit your usage limit. To get more access now, send a request to your admin.\nor try again at 11:10 PM."
+        `■ You've hit your usage limit. To get more access now, send a request to your admin.\nor try again at ${displayText}.`
       );
 
-      expect(result?.displayText).toBe('11:10 PM');
-      expect(result?.availableAt).toMatch(/2026-04-19T/);
+      expect(result?.displayText).toBe(displayText);
+      expect(result?.availableAt).toBe(expectedAvailableAt.toISOString());
     } finally {
       vi.useRealTimers();
     }

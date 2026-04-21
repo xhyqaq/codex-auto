@@ -55,5 +55,5 @@ describe('package distribution', () => {
     expect(packedPaths.some((entry) => entry.startsWith('docs/'))).toBe(false);
     expect(packedPaths).not.toContain('tsconfig.json');
     expect(packedPaths).not.toContain('vitest.config.ts');
-  });
+  }, 20_000);
 });

@@ -1,6 +1,6 @@
 import { readdir, symlink, rm, copyFile } from 'node:fs/promises';
 import path from 'node:path';
-import { copyFileAtomic, ensureDir, pathExists } from './fs.js';
+import { copyFileAtomic, ensureDir, pathExists, writeTextAtomic } from './fs.js';
 import {
   accountsRoot,
   instancesRoot,
@@ -28,21 +28,22 @@ export async function createInstanceOverlay(
   }
 
   await ensureDir(instanceDir);
+  await ensureDir(codexHome);
 
-  const overlayEntries = new Set<string>([
-    'config.toml',
-    'history.jsonl',
-    'session_index.jsonl',
-    'sessions'
-  ]);
-
-  if (await pathExists(codexHome)) {
-    const entries = await readdir(codexHome);
-    for (const entry of entries) {
-      overlayEntries.add(entry);
+  const persistentFileEntries = ['history.jsonl', 'session_index.jsonl'];
+  for (const entry of persistentFileEntries) {
+    const target = path.join(codexHome, entry);
+    if (!(await pathExists(target))) {
+      await writeTextAtomic(target, '');
     }
   }
 
+  const sessionsDir = path.join(codexHome, 'sessions');
+  if (!(await pathExists(sessionsDir))) {
+    await ensureDir(sessionsDir);
+  }
+
+  const overlayEntries = new Set<string>(await readdir(codexHome));
   overlayEntries.delete('auth.json');
 
   for (const entry of overlayEntries) {
