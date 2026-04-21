@@ -13,6 +13,43 @@ async function seedCodexHome(codexHome: string): Promise<void> {
   await writeFile(path.join(codexHome, 'session_index.jsonl'), '', 'utf8');
 }
 
+async function seedExistingSession(
+  codexHome: string,
+  options: { id: string; updatedAt: string; cwd?: string }
+): Promise<void> {
+  const sessionFilePath = path.join(
+    codexHome,
+    'sessions',
+    '2026',
+    '04',
+    '17',
+    `rollout-2026-04-17T18-00-00-${options.id}.jsonl`
+  );
+  await mkdir(path.dirname(sessionFilePath), { recursive: true });
+  await writeFile(
+    sessionFilePath,
+    `${JSON.stringify({
+      timestamp: options.updatedAt,
+      type: 'session_meta',
+      payload: {
+        id: options.id,
+        timestamp: options.updatedAt,
+        cwd: options.cwd ?? process.cwd()
+      }
+    })}\n`,
+    'utf8'
+  );
+  await writeFile(
+    path.join(codexHome, 'session_index.jsonl'),
+    `${JSON.stringify({
+      id: options.id,
+      thread_name: `thread-${options.id}`,
+      updated_at: options.updatedAt
+    })}\n`,
+    'utf8'
+  );
+}
+
 class TtyCaptureStream extends Writable {
   override isTTY = true;
   override columns = 120;
@@ -88,6 +125,216 @@ describe('managed session runner', () => {
           }
         }
       });
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('binds an explicit initial resume target even when resume does not create a new session record', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex-resume-explicit.log');
+    const stderr = new PassThrough();
+
+    try {
+      await seedCodexHome(codexHome);
+      await seedExistingSession(codexHome, {
+        id: 'resume-explicit-session',
+        updatedAt: '2026-04-17T18:00:00.000Z'
+      });
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        extraArgs: ['resume', 'resume-explicit-session'],
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SKIP_SESSION_ARTIFACTS_ON_RESUME: '1'
+        },
+        stderr,
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+      const logText = await readFile(logPath, 'utf8');
+      expect(logText).toContain('"args":["resume","resume-explicit-session","--no-alt-screen"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","resume-explicit-session","Continue"]');
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        lastSessionId: 'resume-explicit-session'
+      });
+      expect(stderr.read()?.toString() ?? '').not.toContain('Unable to safely resume bound session');
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('uses state.lastSessionId as fallback when bare resume has no explicit session id', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex-no-session.log');
+    const stderr = new PassThrough();
+
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: 'state-last-session',
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        extraArgs: ['resume'],
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SKIP_SESSION_ARTIFACTS_ON_RESUME: '1'
+        },
+        stderr,
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+      const logText = await readFile(logPath, 'utf8');
+      // First run uses original args; second run uses state.lastSessionId to resume
+      expect(logText).toContain('"args":["resume","--no-alt-screen"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","state-last-session","Continue"]');
+      expect(stderr.read()?.toString() ?? '').not.toContain('Unable to safely resume bound session');
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('binds session from interactive resume picker via session file mtime when no session id is in args', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex-picker.log');
+    const stderr = new PassThrough();
+
+    try {
+      await seedCodexHome(codexHome);
+      await seedExistingSession(codexHome, {
+        id: 'picker-session',
+        updatedAt: '2026-04-17T18:00:00.000Z'
+      });
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        extraArgs: ['resume'],
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_RESUME_PICKER_SESSION_ID: 'picker-session'
+        },
+        stderr,
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+      const logText = await readFile(logPath, 'utf8');
+      expect(logText).toContain('"args":["resume","--no-alt-screen"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","picker-session","Continue"]');
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        lastSessionId: 'picker-session'
+      });
+      expect(stderr.read()?.toString() ?? '').not.toContain('Unable to safely resume bound session');
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('binds resume --last to the latest session in the current workspace even when no new session record is created', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex-resume-last.log');
+    const stderr = new PassThrough();
+
+    try {
+      await seedCodexHome(codexHome);
+      await seedExistingSession(codexHome, {
+        id: 'resume-workspace-session',
+        updatedAt: '2026-04-17T18:00:00.000Z'
+      });
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        extraArgs: ['resume', '--last'],
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SKIP_SESSION_ARTIFACTS_ON_RESUME: '1'
+        },
+        stderr,
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+      const logText = await readFile(logPath, 'utf8');
+      expect(logText).toContain('"args":["resume","--last","--no-alt-screen"]');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","resume-workspace-session","Continue"]');
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        lastSessionId: 'resume-workspace-session'
+      });
+      expect(stderr.read()?.toString() ?? '').not.toContain('Unable to safely resume bound session');
     } finally {
       await cleanupTempDir(appHome);
       await cleanupTempDir(codexHome);

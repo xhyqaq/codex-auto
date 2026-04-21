@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { Writable } from 'node:stream';
 import { spawn as spawnPty } from 'node-pty';
@@ -157,6 +157,35 @@ type SessionCandidate = {
   timestampMs: number;
 };
 
+const resumeOptionsWithValue = new Set([
+  '-c',
+  '--config',
+  '--enable',
+  '--disable',
+  '--remote',
+  '--remote-auth-token-env',
+  '-i',
+  '--image',
+  '-m',
+  '--model',
+  '--local-provider',
+  '-p',
+  '--profile',
+  '-s',
+  '--sandbox',
+  '-a',
+  '--ask-for-approval',
+  '-C',
+  '--cd',
+  '--add-dir'
+]);
+
+type InitialResumeTarget = {
+  explicitSessionId: string | null;
+  useLast: boolean;
+  includeAll: boolean;
+};
+
 function parseDateMs(value: unknown): number | null {
   if (typeof value !== 'string') {
     return null;
@@ -164,6 +193,91 @@ function parseDateMs(value: unknown): number | null {
 
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractInitialResumeTarget(args: string[]): InitialResumeTarget | null {
+  const firstPositionalIndex = args.findIndex((arg) => !arg.startsWith('-'));
+  if (firstPositionalIndex === -1 || args[firstPositionalIndex] !== 'resume') {
+    return null;
+  }
+
+  let explicitSessionId: string | null = null;
+  let useLast = false;
+  let includeAll = false;
+
+  for (let index = firstPositionalIndex + 1; index < args.length; index += 1) {
+    const arg = args[index]!;
+
+    if (arg === '--last') {
+      useLast = true;
+      continue;
+    }
+
+    if (arg === '--all') {
+      includeAll = true;
+      continue;
+    }
+
+    if (arg === '--') {
+      const sessionId = args[index + 1];
+      if (!useLast && sessionId && !sessionId.startsWith('-')) {
+        explicitSessionId = sessionId;
+      }
+      break;
+    }
+
+    if (arg.startsWith('--')) {
+      const equalsIndex = arg.indexOf('=');
+      const optionName = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
+      if (resumeOptionsWithValue.has(optionName)) {
+        if (equalsIndex === -1) {
+          index += 1;
+        }
+        continue;
+      }
+    } else if (resumeOptionsWithValue.has(arg)) {
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith('-')) {
+      continue;
+    }
+
+    if (!useLast) {
+      explicitSessionId = arg;
+    }
+    break;
+  }
+
+  if (!useLast && !explicitSessionId) {
+    return null;
+  }
+
+  return {
+    explicitSessionId,
+    useLast,
+    includeAll
+  };
+}
+
+function mergeSessionCandidates(candidates: SessionCandidate[]): SessionCandidate[] {
+  const merged = new Map<string, SessionCandidate>();
+  for (const candidate of candidates) {
+    const existing = merged.get(candidate.id);
+    if (!existing) {
+      merged.set(candidate.id, candidate);
+      continue;
+    }
+
+    merged.set(candidate.id, {
+      id: candidate.id,
+      cwd: existing.cwd ?? candidate.cwd,
+      timestampMs: Math.max(existing.timestampMs, candidate.timestampMs)
+    });
+  }
+
+  return [...merged.values()];
 }
 
 async function readSessionCandidatesFromFiles(instanceDir: string): Promise<SessionCandidate[]> {
@@ -245,6 +359,22 @@ async function snapshotKnownSessionIds(instanceDir: string): Promise<Set<string>
   return new Set([...fromFiles, ...fromIndex].map((candidate) => candidate.id));
 }
 
+function selectLatestSessionCandidate(
+  candidates: SessionCandidate[],
+  workspaceDir: string,
+  includeAll: boolean
+): string | null {
+  const merged = mergeSessionCandidates(candidates);
+  const filtered = includeAll
+    ? merged
+    : merged.filter((candidate) => candidate.cwd === workspaceDir || candidate.cwd === null);
+  const cwdMatched = includeAll ? filtered : filtered.filter((candidate) => candidate.cwd === workspaceDir);
+  const ranked = (cwdMatched.length > 0 ? cwdMatched : filtered.length > 0 ? filtered : merged).sort(
+    (left, right) => right.timestampMs - left.timestampMs
+  );
+  return ranked[0]?.id ?? null;
+}
+
 function selectBestSessionCandidate(
   candidates: SessionCandidate[],
   workspaceDir: string,
@@ -282,7 +412,36 @@ async function discoverSessionId(options: {
   }
 
   const newIndexCandidates = fromIndex.filter((candidate) => !options.knownSessionIds.has(candidate.id));
-  return selectBestSessionCandidate(newIndexCandidates, options.workspaceDir, options.launchStartedAt);
+  const discoveredFromIndex = selectBestSessionCandidate(newIndexCandidates, options.workspaceDir, options.launchStartedAt);
+  if (discoveredFromIndex) {
+    return discoveredFromIndex;
+  }
+
+  // Fall back to mtime-based discovery for pre-existing sessions resumed via interactive picker
+  const resumedFileCandidates = await readSessionCandidatesFromFilesByMtime(options.instanceDir, options.launchStartedAt);
+  return selectBestSessionCandidate(resumedFileCandidates, options.workspaceDir, options.launchStartedAt);
+}
+
+async function resolveInitialResumeSessionId(options: {
+  args: string[];
+  instanceDir: string;
+  workspaceDir: string;
+}): Promise<string | null> {
+  const target = extractInitialResumeTarget(options.args);
+  if (!target) {
+    return null;
+  }
+
+  if (target.explicitSessionId) {
+    return target.explicitSessionId;
+  }
+
+  const [fromFiles, fromIndex] = await Promise.all([
+    readSessionCandidatesFromFiles(options.instanceDir),
+    readSessionCandidatesFromIndex(options.instanceDir)
+  ]);
+
+  return selectLatestSessionCandidate([...fromFiles, ...fromIndex], options.workspaceDir, target.includeAll);
 }
 
 async function waitForSessionId(options: {
@@ -327,6 +486,61 @@ async function collectSessionFiles(root: string): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+async function readSessionCandidatesFromFilesByMtime(
+  instanceDir: string,
+  since: number
+): Promise<SessionCandidate[]> {
+  const sessionFiles = await collectSessionFiles(path.join(instanceDir, 'sessions'));
+  const candidates: SessionCandidate[] = [];
+
+  for (const sessionFile of sessionFiles) {
+    let mtimeMs: number;
+    try {
+      const fileInfo = await stat(sessionFile);
+      mtimeMs = fileInfo.mtimeMs;
+    } catch {
+      continue;
+    }
+
+    if (mtimeMs < since) {
+      continue;
+    }
+
+    const fileText = await readTextIfExists(sessionFile);
+    const firstLine = fileText?.split('\n').find((line) => line.trim().length > 0);
+    let id: string | null = null;
+    let cwd: string | null = null;
+
+    if (firstLine) {
+      try {
+        const parsed = JSON.parse(firstLine) as {
+          type?: unknown;
+          payload?: { id?: unknown; cwd?: unknown };
+        };
+        if (parsed.type === 'session_meta' && typeof parsed.payload?.id === 'string') {
+          id = parsed.payload.id;
+          cwd = typeof parsed.payload.cwd === 'string' ? parsed.payload.cwd : null;
+        }
+      } catch {
+        // fall through to filename extraction
+      }
+    }
+
+    if (!id) {
+      const match = path.basename(sessionFile).match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i);
+      if (match) {
+        id = match[1]!;
+      }
+    }
+
+    if (id) {
+      candidates.push({ id, cwd, timestampMs: mtimeMs });
+    }
+  }
+
+  return candidates;
 }
 
 async function persistLastSessionId(appHome: string, sessionId: string | null): Promise<void> {
@@ -799,6 +1013,34 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
   });
 
   await createInstanceOverlay(codexHome, instanceDir, authPath);
+  lastSessionId = await resolveInitialResumeSessionId({
+    args: options.extraArgs ?? [],
+    instanceDir,
+    workspaceDir: options.workspaceDir
+  });
+
+  // For bare `resume` with no explicit session ID or --last, fall back to the last known
+  // session from state so that account switching can resume the correct session without
+  // requiring the user to re-select from the picker on the new account.
+  if (!lastSessionId) {
+    const firstPositional = (options.extraArgs ?? []).find((a) => !a.startsWith('-'));
+    if (firstPositional === 'resume') {
+      lastSessionId = state.lastSessionId ?? null;
+    }
+  }
+
+  if (lastSessionId) {
+    await writeManagedRunState(options.appHome, {
+      runId,
+      pid: process.pid,
+      workspaceDir: options.workspaceDir,
+      startedAt: runStartedAt,
+      status: 'running',
+      currentAccount: current.name,
+      currentSessionId: lastSessionId,
+      sessionBindingLost
+    });
+  }
 
   try {
     while (true) {
@@ -891,7 +1133,11 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
       if (result.interrupted) {
         const latestState = await loadState(options.appHome);
         latestState.currentIndex = current.index;
-        latestState.lastSessionId = lastSessionId;
+        if (hasMissingSessionError(result.output)) {
+          latestState.lastSessionId = null;
+        } else if (lastSessionId) {
+          latestState.lastSessionId = lastSessionId;
+        }
         if (result.retryAvailability) {
           latestState.retryAvailabilityByAccount[current.name] = result.retryAvailability;
         }
@@ -920,7 +1166,11 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
         const latestState = await loadState(options.appHome);
         latestState.currentIndex = current.index;
         latestState.lastSuccessfulAccount = current.name;
-        latestState.lastSessionId = lastSessionId;
+        if (hasMissingSessionError(result.output)) {
+          latestState.lastSessionId = null;
+        } else if (lastSessionId) {
+          latestState.lastSessionId = lastSessionId;
+        }
         delete latestState.retryAvailabilityByAccount[current.name];
         await saveState(options.appHome, latestState);
         await markAccountUsed(options.appHome, current.name);
@@ -958,7 +1208,9 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
 
       if (!next) {
         latestState.currentIndex = current.index;
-        latestState.lastSessionId = lastSessionId;
+        if (lastSessionId) {
+          latestState.lastSessionId = lastSessionId;
+        }
         await saveState(options.appHome, latestState);
         stderr.write('\n[codex-auto] All configured accounts are exhausted.\n');
         await logger.log('all_exhausted', {
@@ -1009,7 +1261,9 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
       switchCount += 1;
       stderr.write(`\n[codex-auto] ${current.name} hit a quota limit. Switching to ${next.name} and resuming...\n`);
       latestState.currentIndex = next.index;
-      latestState.lastSessionId = lastSessionId;
+      if (lastSessionId) {
+        latestState.lastSessionId = lastSessionId;
+      }
       await saveState(options.appHome, latestState);
       current = next;
       firstRun = false;

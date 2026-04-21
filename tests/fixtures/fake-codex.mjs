@@ -30,6 +30,7 @@ const quotaAfterPromptDelayMs = Number.parseInt(process.env.FAKE_CODEX_QUOTA_AFT
 const replayOldQuotaDelayMs = Number.parseInt(process.env.FAKE_CODEX_REPLAY_OLD_QUOTA_DELAY_MS ?? '600', 10);
 const livePromptDelayMs = Number.parseInt(process.env.FAKE_CODEX_LIVE_PROMPT_DELAY_MS ?? '1800', 10);
 const quotaMessageVariant = process.env.FAKE_CODEX_QUOTA_MESSAGE_VARIANT ?? 'admin';
+const pickerSessionId = process.env.FAKE_CODEX_RESUME_PICKER_SESSION_ID ?? null;
 let pendingAsyncExit = false;
 
 function writeQuotaMessage(retryAt) {
@@ -107,6 +108,9 @@ function writePrimarySessionArtifacts() {
   }
 }
 
+const isPickerResume = Boolean(pickerSessionId) && args[0] === 'resume' && args.slice(1).filter((arg) => !arg.startsWith('--')).length === 0;
+const skipSessionArtifactsForResume = (process.env.FAKE_CODEX_SKIP_SESSION_ARTIFACTS_ON_RESUME === '1' && args[0] === 'resume') || isPickerResume;
+
 if (logPath) {
   appendFileSync(logPath, `${JSON.stringify({ args, authText })}\n`, 'utf8');
 }
@@ -117,10 +121,30 @@ if (args[0] === 'login') {
   process.exit(0);
 }
 
-if (delayedSessionWriteMs > 0) {
-  setTimeout(writePrimarySessionArtifacts, delayedSessionWriteMs);
-} else {
-  writePrimarySessionArtifacts();
+// Simulate interactive picker: touch pre-seeded session file to update its mtime,
+// mimicking codex opening the user-selected session before hitting quota.
+if (isPickerResume) {
+  const pickerFilePath = path.join(
+    codexHome,
+    'sessions',
+    '2026',
+    '04',
+    '17',
+    `rollout-2026-04-17T18-00-00-${pickerSessionId}.jsonl`
+  );
+  appendFileSync(
+    pickerFilePath,
+    `${JSON.stringify({ timestamp: new Date().toISOString(), type: 'message_delta', payload: { content: 'resumed' } })}\n`,
+    'utf8'
+  );
+}
+
+if (!skipSessionArtifactsForResume) {
+  if (delayedSessionWriteMs > 0) {
+    setTimeout(writePrimarySessionArtifacts, delayedSessionWriteMs);
+  } else {
+    writePrimarySessionArtifacts();
+  }
 }
 
 const competingSessionId = process.env.FAKE_CODEX_COMPETING_SESSION_ID;
