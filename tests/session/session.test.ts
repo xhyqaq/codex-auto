@@ -94,6 +94,58 @@ describe('managed session runner', () => {
     }
   });
 
+  test('switches accounts when codex emits the current upgrade quota prompt', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SESSION_ID: 'session-upgrade-prompt',
+          FAKE_CODEX_QUOTA_MESSAGE_VARIANT: 'upgrade',
+          FAKE_CODEX_PRIMARY_RETRY_AT: '6:42 PM'
+        },
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+
+      const logText = await readFile(logPath, 'utf8');
+      expect(logText).toContain('"args":["resume","--no-alt-screen","session-upgrade-prompt","Continue"]');
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        lastSessionId: 'session-upgrade-prompt',
+        retryAvailabilityByAccount: {
+          a: {
+            displayText: '6:42 PM'
+          }
+        }
+      });
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
   test('starts from the requested account override', async () => {
     const appHome = await createTempAppHome();
     const codexHome = await createTempAppHome('codex-home-');
@@ -746,6 +798,57 @@ process.exit(0);
       });
     } finally {
       stdin.end();
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('non-interactive mode waits briefly for the bound session id to be persisted before rotating', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex-non-interactive.log');
+    const stderr = new PassThrough();
+
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['a', 'b'],
+        currentIndex: 0,
+        preferredAccountName: 'a',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'b-token' });
+
+      const result = await runManagedSession({
+        appHome,
+        codexHome,
+        workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+        env: {
+          ...process.env,
+          FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_SESSION_ID: 'non-interactive-delayed-session',
+          FAKE_CODEX_DELAY_SESSION_WRITE_MS: '200',
+          FAKE_CODEX_WAIT_ON_QUOTA: '1'
+        },
+        stderr,
+        interactive: false
+      });
+
+      expect(result.switchCount).toBe(1);
+      expect(result.finalAccount).toBe('b');
+      await expect(readFile(logPath, 'utf8')).resolves.toContain(
+        '"args":["resume","--no-alt-screen","non-interactive-delayed-session","Continue"]'
+      );
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        lastSessionId: 'non-interactive-delayed-session'
+      });
+      expect(stderr.read()?.toString() ?? '').not.toContain('Unable to safely resume bound session');
+    } finally {
       await cleanupTempDir(appHome);
       await cleanupTempDir(codexHome);
     }

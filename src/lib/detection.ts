@@ -2,7 +2,8 @@ import stripAnsi from 'strip-ansi';
 import type { RetryAvailability } from './state.js';
 
 const quotaPatterns = [
-  /you(?:'|’)ve hit your usage limit\.\s+to get more access now,\s+send a request to your admin\.?(?:\s+or try again at [^\n]+\.?)?/i
+  /you(?:'|’)ve hit your usage limit\.\s+to get more access now,\s+send a request to your admin\.?(?:\s+or try again at [^\n]+\.?)?/i,
+  /you(?:'|’)ve hit your usage limit\.\s+upgrade to pro\b[\s\S]*?(?:purchase more credits|or try again at [^\n]+\.?)/i
 ];
 const retryAtPattern = /or try again at ([^\n.]+)\.?/i;
 

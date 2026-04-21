@@ -23,10 +23,11 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 - Keep interactive Codex sessions usable in normal terminal workflows, including clean shell input after automatic rotation or forced stops
 - Save a default start account for future runs
 - Automatically switch to the next account on rate limit
+- Recognize current Codex quota prompts, including upgrade/purchase messages with retry times
 - Show retry times for accounts that are still waiting for quota to reset
 - Bind each active managed session to its own recovery target across same-project and cross-project concurrent runs
 - Resume only the session ID already bound to the current managed run instead of guessing from the latest session
-- Give a fresh interactive run a brief chance to capture its own recovery target before automatic recovery is abandoned
+- Give a fresh run a brief chance to capture its own recovery target before automatic recovery is abandoned
 - If you cancel an interactive quota prompt with `Ctrl-C`, exit that managed run cleanly instead of forcing an exhausted-accounts flow
 - Stop automatic recovery when the original session cannot be confirmed or its session ID is no longer valid
 - Automatically send `Continue` on resume
@@ -231,7 +232,7 @@ When a rate limit is hit:
 codex resume <session-id> Continue
 ```
 
-If a fresh interactive run has already reached a live prompt but its recovery target is still catching up, `codex-auto` gives that run a short window to capture its own session ID before surfacing a recovery failure. If the current managed run still has not safely captured its own session ID, or if that bound session ID is no longer available, `codex-auto` stops automatic recovery and surfaces the failure instead of falling back to `codex resume --last`.
+If a fresh run has already triggered quota handling but its recovery target is still catching up, `codex-auto` gives that run a short window to capture its own session ID before surfacing a recovery failure. If the current managed run still has not safely captured its own session ID, or if that bound session ID is no longer available, `codex-auto` stops automatic recovery and surfaces the failure instead of falling back to `codex resume --last`.
 
 If an interactive quota prompt is already on screen and you press `Ctrl-C`, `codex-auto` treats that as a user cancel for the current managed run. It restores the terminal state and exits cleanly instead of continuing into automatic exhausted-account handling.
 

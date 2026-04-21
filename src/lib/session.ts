@@ -67,7 +67,7 @@ type InvocationResult = {
   interrupted: boolean;
 };
 
-const interactiveQuotaShutdownGraceMs = 250;
+const quotaShutdownGraceMs = 250;
 const prePromptQuotaDecisionGraceMs = 150;
 const postPromptQuotaConfirmationMs = 5_000;
 const sessionDiscoveryPollIntervalMs = 50;
@@ -480,7 +480,7 @@ async function launchInvocation(options: {
 
       quotaShutdownTimer = setTimeout(() => {
         ptyProcess.kill('SIGTERM');
-      }, interactiveQuotaShutdownGraceMs);
+      }, quotaShutdownGraceMs);
     };
 
     const stdinDataHandler = (chunk: Buffer | string): void => {
@@ -614,6 +614,17 @@ async function launchInvocation(options: {
     stdio: 'pipe'
   });
   let quotaDetected = false;
+  let quotaShutdownTimer: NodeJS.Timeout | null = null;
+
+  const stopChildForQuota = (): void => {
+    if (quotaShutdownTimer) {
+      return;
+    }
+
+    quotaShutdownTimer = setTimeout(() => {
+      child.kill('SIGTERM');
+    }, quotaShutdownGraceMs);
+  };
 
   const triggerQuotaRotation = (): void => {
     if (quotaDetected) {
@@ -642,7 +653,7 @@ async function launchInvocation(options: {
 
         quotaDetected = true;
         quotaRelevantOutput = confirmedEvaluation.relevantOutput;
-        child.kill('SIGTERM');
+        stopChildForQuota();
       }, postPromptQuotaConfirmationMs);
       return;
     }
@@ -670,7 +681,7 @@ async function launchInvocation(options: {
 
       quotaDetected = true;
       quotaRelevantOutput = delayedEvaluation.relevantOutput;
-      child.kill('SIGTERM');
+      stopChildForQuota();
     }, prePromptQuotaDecisionGraceMs);
   };
 
@@ -692,6 +703,9 @@ async function launchInvocation(options: {
     child.on('error', (error) => {
       clearPendingPrePromptQuotaTimer();
       clearPendingPostPromptQuotaTimer();
+      if (quotaShutdownTimer) {
+        clearTimeout(quotaShutdownTimer);
+      }
       const finalEvaluation = quotaDetected
         ? {
             quotaError: true,
@@ -710,6 +724,9 @@ async function launchInvocation(options: {
     child.on('close', (code) => {
       clearPendingPrePromptQuotaTimer();
       clearPendingPostPromptQuotaTimer();
+      if (quotaShutdownTimer) {
+        clearTimeout(quotaShutdownTimer);
+      }
       const finalEvaluation = quotaDetected
         ? {
             quotaError: true,
@@ -831,7 +848,7 @@ export async function runManagedSession(options: RunManagedSessionOptions): Prom
             workspaceDir: options.workspaceDir,
             launchStartedAt,
             knownSessionIds,
-            timeoutMs: interactive && result.quotaError ? sessionDiscoveryTimeoutOnQuotaMs : 0
+            timeoutMs: result.quotaError ? sessionDiscoveryTimeoutOnQuotaMs : 0
           })
         : null;
       if (discoveredSessionId && !lastSessionId) {

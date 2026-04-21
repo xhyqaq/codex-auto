@@ -29,9 +29,18 @@ const currentRetryAt = process.env.FAKE_CODEX_CURRENT_RETRY_AT ?? '4:06 PM';
 const quotaAfterPromptDelayMs = Number.parseInt(process.env.FAKE_CODEX_QUOTA_AFTER_PROMPT_DELAY_MS ?? '20', 10);
 const replayOldQuotaDelayMs = Number.parseInt(process.env.FAKE_CODEX_REPLAY_OLD_QUOTA_DELAY_MS ?? '600', 10);
 const livePromptDelayMs = Number.parseInt(process.env.FAKE_CODEX_LIVE_PROMPT_DELAY_MS ?? '1800', 10);
+const quotaMessageVariant = process.env.FAKE_CODEX_QUOTA_MESSAGE_VARIANT ?? 'admin';
 let pendingAsyncExit = false;
 
 function writeQuotaMessage(retryAt) {
+  if (quotaMessageVariant === 'upgrade') {
+    process.stdout.write(
+      "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits"
+    );
+    process.stdout.write(retryAt ? ` or try again at ${retryAt}.\n` : ".\n");
+    return;
+  }
+
   process.stdout.write("■ You've hit your usage limit. To get more access now, send a request to your admin.\n");
   if (retryAt) {
     process.stdout.write(`or try again at ${retryAt}.\n`);

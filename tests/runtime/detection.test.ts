@@ -11,6 +11,11 @@ describe('quota detection', () => {
         "■ You've hit your usage limit. To get more access now, send a request to your admin\nor try again at 11:10 PM."
       )
     ).toBe(true);
+    expect(
+      hasQuotaError(
+        "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 6:42 PM."
+      )
+    ).toBe(true);
   });
 
   test('does not treat advisory or unrelated prompts as quota exhaustion', () => {
