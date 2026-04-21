@@ -38,6 +38,7 @@
 ## 前置要求
 
 - Node.js 18+
+- 建议在 macOS 或 Linux 终端环境中使用；如果你在 Windows 上，请放到 WSL 里跑，不要直接用原生 `cmd.exe` 或 PowerShell
 - 本机已安装可执行的 `codex` CLI
 - `codex` 可以正常执行 `codex login`、`codex resume`
 

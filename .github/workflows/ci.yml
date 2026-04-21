@@ -30,9 +30,7 @@ jobs:
         run: npm run build
 
       - name: Pack release tarball
-        run: |
-          npm pack --json
-          echo "TARBALL=$(node -p \"const p=require('./package.json'); p.name + '-' + p.version + '.tgz'\")" >> "$GITHUB_ENV"
+        run: node ./scripts/pack-release-tarball.mjs
 
       - name: Install packed CLI globally
         run: npm install -g "./$TARBALL"

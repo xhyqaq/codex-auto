@@ -38,6 +38,7 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 ## Prerequisites
 
 - Node.js 18+
+- macOS or Linux terminal environment; on Windows, run `codex-auto` inside WSL instead of native `cmd.exe` or PowerShell
 - `codex` CLI installed and executable
 - `codex login` and `codex resume` working properly
 

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -13,6 +13,33 @@ afterEach(async () => {
 });
 
 describe('package distribution', () => {
+  test('pack helper emits tarball filename and writes GITHUB_ENV', async () => {
+    const packageJson = (await import('../../package.json', { with: { type: 'json' } })).default as {
+      name: string;
+      version: string;
+    };
+
+    const packDir = await mkdtemp(path.join(tmpdir(), 'codex-auto-pack-helper-'));
+    tempDirs.push(packDir);
+    const githubEnvPath = path.join(packDir, 'github.env');
+
+    const { stdout } = await execFileAsync(
+      'node',
+      ['scripts/pack-release-tarball.mjs', '--pack-destination', packDir],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          GITHUB_ENV: githubEnvPath
+        }
+      }
+    );
+
+    const tarballName = stdout.trim();
+    expect(tarballName).toBe(`${packageJson.name}-${packageJson.version}.tgz`);
+    await expect(readFile(githubEnvPath, 'utf8')).resolves.toBe(`TARBALL=${tarballName}\n`);
+  }, 20_000);
+
   test('packs only release files and exposes publishable metadata', async () => {
     const packageJson = (await import('../../package.json', { with: { type: 'json' } })).default as {
       private?: boolean;
