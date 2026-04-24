@@ -10,12 +10,22 @@ const retryAtPattern = /or try again at ([^\n.]+)\.?/i;
 const promptPattern = /(^|\n)(?:›|>)(?:\s|$)/g;
 
 function parseMeridiemTime(displayText: string): Date | null {
-  const match = displayText.trim().match(/^(\d{1,2}):(\d{2})\s*([AP]M)$/i);
-  if (!match) {
+  const trimmed = displayText.trim();
+
+  // Strip ordinal suffixes so native Date.parse can handle "Apr 25th, 2026 1:44 AM" etc.
+  const normalized = trimmed.replace(/(\d+)(?:st|nd|rd|th)\b/gi, '$1');
+  const nativeParsed = new Date(normalized);
+  if (!Number.isNaN(nativeParsed.getTime())) {
+    return nativeParsed;
+  }
+
+  // Fallback: extract a bare "H:MM AM/PM" time and resolve to today or tomorrow
+  const timeMatch = trimmed.match(/(\d{1,2}):(\d{2})\s*([AP]M)/i);
+  if (!timeMatch) {
     return null;
   }
 
-  const [, rawHours, rawMinutes, period] = match;
+  const [, rawHours, rawMinutes, period] = timeMatch;
   const hours = Number.parseInt(rawHours, 10);
   const minutes = Number.parseInt(rawMinutes, 10);
   if (hours < 1 || hours > 12 || minutes < 0 || minutes > 59) {
