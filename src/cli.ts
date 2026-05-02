@@ -1,7 +1,14 @@
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import type { Writable } from 'node:stream';
-import { addAccount, bootstrapDefaultAccount, removeAccount, renderAccountList, setPreferredAccount } from './lib/accounts.js';
+import {
+  activateAccount,
+  addAccount,
+  bootstrapDefaultAccount,
+  removeAccount,
+  renderAccountList,
+  setPreferredAccount
+} from './lib/accounts.js';
 import { runCodexLogin, resolveCodexCommand } from './lib/codex-bin.js';
 import { resolveAppHome, resolveCodexHome } from './lib/paths.js';
 import { loadState } from './lib/state.js';
@@ -65,7 +72,7 @@ export function extractManagedOptions(argv: string[]): {
   return { accountName, codexHome, rest };
 }
 
-const ownCommands = new Set(['add', 'remove', 'list', 'use', 'version']);
+const ownCommands = new Set(['activate', 'add', 'remove', 'list', 'use', 'version']);
 
 export function isOwnCommand(rest: string[]): boolean {
   if (rest.includes('--help') || rest.includes('-h')) return true;
@@ -148,6 +155,16 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
     stdout.write(`${packageVersion}\n`);
     exitCode = 0;
   });
+
+  program
+    .command('activate')
+    .description('Activate an account for the native codex CLI')
+    .argument('[name]')
+    .action(async (name: string | undefined) => {
+      const activatedName = await activateAccount(appHome, selectedCodexHome, name);
+      stdout.write(`Activated account ${activatedName} for codex\n`);
+      exitCode = 0;
+    });
 
   program
     .command('use')

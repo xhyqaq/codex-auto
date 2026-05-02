@@ -136,6 +136,33 @@ export async function setPreferredAccount(appHome: string, name: string): Promis
   await saveState(appHome, state);
 }
 
+export async function activateAccount(appHome: string, codexHome: string, name?: string): Promise<string> {
+  await ensureAppLayout(appHome);
+  const state = await loadState(appHome);
+  if (state.accounts.length === 0) {
+    throw new Error('No accounts configured. Use `codex-auto add <name>` first.');
+  }
+
+  const accountName = name ?? state.accounts[state.currentIndex ?? 0] ?? state.accounts[0];
+  const index = state.accounts.indexOf(accountName);
+  if (index === -1) {
+    throw new Error(`Account "${accountName}" does not exist`);
+  }
+
+  const sourceAuthPath = accountAuthPath(appHome, accountName);
+  const authText = await readTextIfExists(sourceAuthPath);
+  if (!authText?.trim()) {
+    throw new Error(`Missing auth.json for account "${accountName}"`);
+  }
+
+  await copyFileAtomic(sourceAuthPath, `${codexHome}/auth.json`);
+  state.currentIndex = index;
+  state.preferredAccountName = accountName;
+  await saveState(appHome, state);
+  await markAccountUsed(appHome, accountName);
+  return accountName;
+}
+
 export async function bootstrapDefaultAccount(appHome: string, codexHome: string): Promise<boolean> {
   await ensureAppLayout(appHome);
   const state = await loadState(appHome);

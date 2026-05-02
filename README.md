@@ -23,6 +23,7 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 - Launch managed `codex` sessions
 - Keep interactive Codex sessions usable in normal terminal workflows, including clean shell input after automatic rotation or forced stops
 - Save a default start account for future runs
+- Activate a managed account for the native `codex` CLI by writing only that account's `auth.json`
 - Automatically switch to the next account on rate limit
 - Recognize current Codex quota prompts, including upgrade/purchase messages with retry times
 - Show retry times for accounts that are still waiting for quota to reset
@@ -120,6 +121,14 @@ Save a default start account for future runs:
 codex-auto use b
 ```
 
+Activate an account for the native `codex` CLI:
+
+```bash
+codex-auto activate b
+```
+
+`codex-auto activate <name>` writes that account's `auth.json` to the source `CODEX_HOME`, so running `codex` directly uses the same account. `codex-auto activate` without a name re-syncs the account marked with `*`.
+
 Start from a custom source `CODEX_HOME`:
 
 ```bash
@@ -141,7 +150,7 @@ codex-auto version
 
 ## Passing Through Codex Arguments
 
-Any arguments not recognized as `codex-auto` own commands (`add`, `remove`, `list`, `use`, `version`) are forwarded directly to `codex`:
+Any arguments not recognized as `codex-auto` own commands (`activate`, `add`, `remove`, `list`, `use`, `version`) are forwarded directly to `codex`:
 
 ```bash
 # Pass a prompt
@@ -224,6 +233,8 @@ Directory structure:
 
 For each managed run, `codex-auto` creates `~/.codex-auto/instances/<id>/`, symlinks entries from the source `CODEX_HOME`, replaces only `auth.json` with a real copy from the selected account, and keeps reusing that overlay for the lifetime of the managed run. On quota switches it swaps only the overlay's `auth.json`, resumes the already bound session, and removes the overlay when the process exits. This keeps session history, plugins, MCP config, and other Codex state in the original home.
 
+`codex-auto activate <name>` is the explicit command that writes an account's `auth.json` back to the source `CODEX_HOME` for native `codex` usage. It does not copy account `config.toml`.
+
 Interactive sessions keep the standard Codex terminal experience, including full-screen and split-pane workflows, while `codex-auto` continues automatic account rotation and session recovery in the background and returns control to your shell in a normal input state after a forced stop or quota-driven switch.
 
 ## Account Switching & Session Recovery
@@ -282,6 +293,7 @@ codex-auto add <name>
 codex-auto add <name> --auth /path/to/auth.json --config /path/to/config.toml
 codex-auto list
 codex-auto use <name>
+codex-auto activate [name]
 codex-auto remove <name>
 codex-auto version
 codex-auto --version
