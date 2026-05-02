@@ -100,7 +100,7 @@ List accounts:
 codex-auto list
 ```
 
-When an account is still waiting for quota to reset, `codex-auto list` shows the retry time from Codex next to that account.
+`codex-auto list` marks the active account with `*`. When an account is still waiting for quota to reset, the list shows the retry time from Codex next to that account.
 
 Start a managed session:
 

@@ -100,7 +100,7 @@ codex-auto add b
 codex-auto list
 ```
 
-如果某个账号仍在等待额度恢复，`codex-auto list` 会把 Codex 给出的恢复时间显示在该账号后面。
+`codex-auto list` 会用 `*` 标记当前启用的账号。如果某个账号仍在等待额度恢复，列表会把 Codex 给出的恢复时间显示在该账号后面。
 
 启动受管会话：
 

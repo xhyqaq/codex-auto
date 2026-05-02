@@ -200,7 +200,7 @@ describe('account lifecycle', () => {
     }
   });
 
-  test('renderAccountList shows retry availability alongside the default marker', () => {
+  test('renderAccountList shows current marker and retry availability', () => {
     const output = renderAccountList({
       version: 1,
       accounts: ['alpha', 'beta'],
@@ -217,7 +217,8 @@ describe('account lifecycle', () => {
       updatedAt: '2026-04-18T00:00:00.000Z'
     });
 
-    expect(output).toContain('* alpha (default, retry at 11:10 PM)');
+    expect(output).toContain('* alpha (retry at 11:10 PM)');
     expect(output).toContain('  beta');
+    expect(output).not.toContain('default');
   });
 });

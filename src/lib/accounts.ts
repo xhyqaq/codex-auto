@@ -180,9 +180,6 @@ export function renderAccountList(state: AppState): string {
       const marker = state.currentIndex === index ? '*' : ' ';
       const labels: string[] = [];
       const retryAvailability = state.retryAvailabilityByAccount?.[account];
-      if (state.preferredAccountName === account) {
-        labels.push('default');
-      }
       if (retryAvailability) {
         labels.push(`retry at ${retryAvailability.displayText}`);
       }

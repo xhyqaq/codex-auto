@@ -101,7 +101,8 @@ describe('cli', () => {
 
       expect(exitCode).toBe(0);
       expect(stdout.toString()).toContain('* alpha (retry at 11:10 PM)');
-      expect(stdout.toString()).toContain('  beta (default)');
+      expect(stdout.toString()).toContain('  beta');
+      expect(stdout.toString()).not.toContain('default');
     } finally {
       await cleanupTempDir(appHome);
     }
