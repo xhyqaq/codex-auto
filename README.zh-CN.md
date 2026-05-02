@@ -54,6 +54,7 @@ npm install -g codex-auto
 
 ```bash
 codex-auto --help
+codex-auto --version
 ```
 
 升级到最新版本：
@@ -131,9 +132,16 @@ codex-auto --codex-home /path/to/.codex
 codex-auto remove b
 ```
 
+查看当前安装版本：
+
+```bash
+codex-auto --version
+codex-auto version
+```
+
 ## 透传 codex 参数
 
-除了 `codex-auto` 自身的命令（`add`、`remove`、`list`），其余参数全部原样转发给 `codex`：
+除了 `codex-auto` 自身的命令（`add`、`remove`、`list`、`use`、`version`），其余参数全部原样转发给 `codex`：
 
 ```bash
 # 传入 prompt
@@ -277,6 +285,8 @@ codex-auto add <name> --auth /path/to/auth.json --config /path/to/config.toml
 codex-auto list
 codex-auto use <name>
 codex-auto remove <name>
+codex-auto version
+codex-auto --version
 
 # 受管会话（默认）
 codex-auto

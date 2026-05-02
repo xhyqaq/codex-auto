@@ -19,7 +19,56 @@ class CaptureStream extends Writable {
   }
 }
 
+async function readPackageVersion(): Promise<string> {
+  const packageJson = JSON.parse(await readFile(path.resolve(process.cwd(), 'package.json'), 'utf8')) as {
+    version: string;
+  };
+  return packageJson.version;
+}
+
 describe('cli', () => {
+  test('version option prints the package version', async () => {
+    const stdout = new CaptureStream();
+
+    const exitCode = await runCli(['--version'], {
+      stdout,
+      stderr: stdout,
+      stdin: process.stdin,
+      interactive: false
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.toString()).toBe(`${await readPackageVersion()}\n`);
+  });
+
+  test('short version option prints the package version', async () => {
+    const stdout = new CaptureStream();
+
+    const exitCode = await runCli(['-V'], {
+      stdout,
+      stderr: stdout,
+      stdin: process.stdin,
+      interactive: false
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.toString()).toBe(`${await readPackageVersion()}\n`);
+  });
+
+  test('version command prints the package version', async () => {
+    const stdout = new CaptureStream();
+
+    const exitCode = await runCli(['version'], {
+      stdout,
+      stderr: stdout,
+      stdin: process.stdin,
+      interactive: false
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.toString()).toBe(`${await readPackageVersion()}\n`);
+  });
+
   test('list prints accounts in order with the current marker', async () => {
     const appHome = await createTempAppHome();
     const stdout = new CaptureStream();
@@ -155,6 +204,7 @@ describe('cli', () => {
 
   test('managed run can start from a requested account', async () => {
     const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
     const logPath = path.join(appHome, 'fake-codex.log');
     const stdout = new CaptureStream();
     try {
@@ -173,6 +223,7 @@ describe('cli', () => {
 
       const exitCode = await runCli(['--account', 'beta'], {
         appHome,
+        codexHome,
         stdout,
         stderr: stdout,
         stdin: process.stdin,
@@ -194,6 +245,7 @@ describe('cli', () => {
       expect(records[0]?.authText).toContain('"account": "b"');
     } finally {
       await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
     }
   });
 
@@ -242,6 +294,7 @@ describe('cli', () => {
 
   test('passthrough forwards extra args to codex', async () => {
     const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
     const logPath = path.join(appHome, 'fake-codex.log');
     const stdout = new CaptureStream();
     try {
@@ -259,6 +312,7 @@ describe('cli', () => {
 
       const exitCode = await runCli(['--model', 'o3', 'fix the bug'], {
         appHome,
+        codexHome,
         stdout,
         stderr: stdout,
         stdin: process.stdin,
@@ -282,11 +336,13 @@ describe('cli', () => {
       expect(records[0]?.args).toContain('--no-alt-screen');
     } finally {
       await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
     }
   });
 
   test('passthrough with --account forwards remaining args to codex', async () => {
     const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
     const logPath = path.join(appHome, 'fake-codex.log');
     const stdout = new CaptureStream();
     try {
@@ -305,6 +361,7 @@ describe('cli', () => {
 
       const exitCode = await runCli(['--account', 'beta', '--full-auto', 'refactor'], {
         appHome,
+        codexHome,
         stdout,
         stderr: stdout,
         stdin: process.stdin,
@@ -327,6 +384,7 @@ describe('cli', () => {
       expect(records[0]?.args).toContain('refactor');
     } finally {
       await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
     }
   });
 
@@ -367,6 +425,7 @@ describe('cli', () => {
 
   test('passthrough does not add --no-alt-screen for exec subcommand', async () => {
     const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
     const logPath = path.join(appHome, 'fake-codex.log');
     const stdout = new CaptureStream();
     try {
@@ -381,6 +440,7 @@ describe('cli', () => {
 
       const exitCode = await runCli(['exec', 'fix the bug'], {
         appHome,
+        codexHome,
         stdout,
         stderr: stdout,
         stdin: process.stdin,
@@ -403,11 +463,13 @@ describe('cli', () => {
       expect(records[0]?.args).not.toContain('--no-alt-screen');
     } finally {
       await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
     }
   });
 
   test('managed run auto-falls back to non-interactive mode when stdio is not a tty', async () => {
     const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
     const logPath = path.join(appHome, 'fake-codex.log');
     const stdout = new CaptureStream();
     try {
@@ -422,6 +484,7 @@ describe('cli', () => {
 
       const exitCode = await runCli([], {
         appHome,
+        codexHome,
         stdout,
         stderr: stdout,
         stdin: process.stdin,
@@ -442,6 +505,7 @@ describe('cli', () => {
       expect(records[0]?.authText).toContain('"account": "b"');
     } finally {
       await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
     }
   });
 });
@@ -485,8 +549,20 @@ describe('isOwnCommand', () => {
     expect(isOwnCommand(['list'])).toBe(true);
   });
 
+  test('recognizes version as own command', () => {
+    expect(isOwnCommand(['version'])).toBe(true);
+  });
+
   test('recognizes --help as own command', () => {
     expect(isOwnCommand(['--help'])).toBe(true);
+  });
+
+  test('recognizes --version as own command', () => {
+    expect(isOwnCommand(['--version'])).toBe(true);
+  });
+
+  test('recognizes -V as own command', () => {
+    expect(isOwnCommand(['-V'])).toBe(true);
   });
 
   test('recognizes -h as own command', () => {

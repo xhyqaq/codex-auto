@@ -54,6 +54,7 @@ Verify the installation:
 
 ```bash
 codex-auto --help
+codex-auto --version
 ```
 
 Upgrade to the latest version:
@@ -131,9 +132,16 @@ Remove an account:
 codex-auto remove b
 ```
 
+Show the installed version:
+
+```bash
+codex-auto --version
+codex-auto version
+```
+
 ## Passing Through Codex Arguments
 
-Any arguments not recognized as `codex-auto` own commands (`add`, `remove`, `list`) are forwarded directly to `codex`:
+Any arguments not recognized as `codex-auto` own commands (`add`, `remove`, `list`, `use`, `version`) are forwarded directly to `codex`:
 
 ```bash
 # Pass a prompt
@@ -275,6 +283,8 @@ codex-auto add <name> --auth /path/to/auth.json --config /path/to/config.toml
 codex-auto list
 codex-auto use <name>
 codex-auto remove <name>
+codex-auto version
+codex-auto --version
 
 # Managed session (default)
 codex-auto

@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { createRequire } from 'node:module';
 import type { Writable } from 'node:stream';
 import { addAccount, bootstrapDefaultAccount, removeAccount, renderAccountList, setPreferredAccount } from './lib/accounts.js';
 import { runCodexLogin, resolveCodexCommand } from './lib/codex-bin.js';
@@ -6,6 +7,9 @@ import { resolveAppHome, resolveCodexHome } from './lib/paths.js';
 import { loadState } from './lib/state.js';
 import { ensureAppLayout } from './lib/runtime.js';
 import { runManagedSession } from './lib/session.js';
+
+const require = createRequire(import.meta.url);
+const { version: packageVersion } = require('../package.json') as { version: string };
 
 type OutputLike = Writable & {
   columns?: number;
@@ -61,7 +65,7 @@ export function extractManagedOptions(argv: string[]): {
   return { accountName, codexHome, rest };
 }
 
-const ownCommands = new Set(['add', 'remove', 'list', 'use']);
+const ownCommands = new Set(['add', 'remove', 'list', 'use', 'version']);
 
 export function isOwnCommand(rest: string[]): boolean {
   if (rest.includes('--help') || rest.includes('-h')) return true;
@@ -124,6 +128,7 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
   program
     .name('codex-auto')
     .description('Multi-account switcher for the codex CLI.\nAll unrecognized arguments are forwarded to codex.')
+    .version(packageVersion, '-V, --version', 'display version')
     .option('--account <name>', 'Start this run from a specific account')
     .option('--codex-home <path>', 'Use a specific source CODEX_HOME as the overlay base')
     .showHelpAfterError()
@@ -136,6 +141,11 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
   program.command('list').description('List configured accounts').action(async () => {
     const state = await loadState(appHome);
     stdout.write(`${renderAccountList(state)}\n`);
+    exitCode = 0;
+  });
+
+  program.command('version').description('Print the current version').action(() => {
+    stdout.write(`${packageVersion}\n`);
     exitCode = 0;
   });
 
@@ -188,6 +198,10 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
   } catch (error) {
     const commandError = error as { code?: string; exitCode?: number };
     if (commandError.code === 'commander.helpDisplayed') {
+      return 0;
+    }
+
+    if (commandError.code === 'commander.version') {
       return 0;
     }
 
