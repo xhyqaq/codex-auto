@@ -24,6 +24,7 @@
 - 交互模式保持接近日常终端里的 Codex 使用体验，自动切号或强制结束后也能把 shell 输入状态恢复正常
 - 支持保存长期生效的默认起始账号
 - 支持把账号池里的账号激活给原生 `codex` CLI 使用，且只写入该账号的 `auth.json`
+- 在交互式终端中提示可用的 `codex-auto` 更新，并支持立即更新、跳过或稍后提醒
 - 命中额度限制后自动切到下一个账号
 - 能识别当前 Codex 的额度耗尽提示，包括带升级/购额链接和重试时间的提示
 - 列表中可显示仍在等待恢复额度的账号及其恢复时间
@@ -147,6 +148,8 @@ codex-auto remove b
 codex-auto --version
 codex-auto version
 ```
+
+在交互式终端中，`codex-auto` 会定期检查 npm 上是否有新版本。发现新版本时会提示你立即更新、跳过该版本或稍后再提醒。设置 `CODEX_AUTO_UPDATE_CHECK=0` 可以关闭检查。
 
 ## 透传 codex 参数
 
@@ -277,6 +280,9 @@ codex resume <session-id> Continue
 
 - `CODEX_AUTO_CODEX_BIN`
   指定底层 `codex` 可执行文件路径，默认是 `codex`
+
+- `CODEX_AUTO_UPDATE_CHECK`
+  设置为 `0` 可关闭交互式更新提示。
 
 示例：
 

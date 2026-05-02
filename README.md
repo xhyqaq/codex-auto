@@ -24,6 +24,7 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 - Keep interactive Codex sessions usable in normal terminal workflows, including clean shell input after automatic rotation or forced stops
 - Save a default start account for future runs
 - Activate a managed account for the native `codex` CLI by writing only that account's `auth.json`
+- Prompt for available `codex-auto` updates in interactive terminals, with update, skip, or later choices
 - Automatically switch to the next account on rate limit
 - Recognize current Codex quota prompts, including upgrade/purchase messages with retry times
 - Show retry times for accounts that are still waiting for quota to reset
@@ -147,6 +148,8 @@ Show the installed version:
 codex-auto --version
 codex-auto version
 ```
+
+In an interactive terminal, `codex-auto` periodically checks npm for a newer `codex-auto` release. When one is available, it prompts you to update now, skip that version, or postpone the reminder. Set `CODEX_AUTO_UPDATE_CHECK=0` to disable the check.
 
 ## Passing Through Codex Arguments
 
@@ -275,6 +278,9 @@ Concurrent run behavior:
 
 - `CODEX_AUTO_CODEX_BIN`
   Path to the `codex` executable. Default: `codex`
+
+- `CODEX_AUTO_UPDATE_CHECK`
+  Set to `0` to disable interactive update prompts.
 
 Example:
 

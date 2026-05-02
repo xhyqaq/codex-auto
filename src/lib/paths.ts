@@ -41,6 +41,10 @@ export function statePath(appHome: string): string {
   return path.join(appHome, 'state.json');
 }
 
+export function updateCheckPath(appHome: string): string {
+  return path.join(appHome, 'update-check.json');
+}
+
 export function logsRoot(appHome: string): string {
   return path.join(appHome, 'logs');
 }

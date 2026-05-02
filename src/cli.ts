@@ -14,9 +14,10 @@ import { resolveAppHome, resolveCodexHome } from './lib/paths.js';
 import { loadState } from './lib/state.js';
 import { ensureAppLayout } from './lib/runtime.js';
 import { runManagedSession } from './lib/session.js';
+import { maybePromptForUpdate } from './lib/update-check.js';
 
 const require = createRequire(import.meta.url);
-const { version: packageVersion } = require('../package.json') as { version: string };
+const { name: packageName, version: packageVersion } = require('../package.json') as { name: string; version: string };
 
 type OutputLike = Writable & {
   columns?: number;
@@ -82,6 +83,13 @@ export function isOwnCommand(rest: string[]): boolean {
   return false;
 }
 
+function shouldPromptForUpdate(rest: string[]): boolean {
+  if (rest.includes('--help') || rest.includes('-h')) return false;
+  if (rest.includes('--version') || rest.includes('-V')) return false;
+  const firstPositional = rest.find((a) => !a.startsWith('-'));
+  return firstPositional !== 'help' && firstPositional !== 'version';
+}
+
 export async function runCli(argv: string[], options: CliRunOptions = {}): Promise<number> {
   const env = {
     ...process.env,
@@ -101,6 +109,17 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
 
   const { accountName, codexHome, rest } = extractManagedOptions(argv);
   const selectedCodexHome = codexHome ?? defaultCodexHome;
+
+  if (shouldPromptForUpdate(rest)) {
+    await maybePromptForUpdate({
+      appHome,
+      packageName,
+      currentVersion: packageVersion,
+      stdin,
+      stderr,
+      env
+    });
+  }
 
   if (!isOwnCommand(rest)) {
     let state = await loadState(appHome);
