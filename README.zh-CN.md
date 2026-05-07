@@ -2,7 +2,7 @@
 
 [English](./README.md) | 中文
 
-`codex-auto` 是一个给 `codex` CLI 用的多账号切换器。
+`codex-auto` 是一个给 `codex` CLI 用的多账号切换器，同时支持把账号激活后启动 Codex App。
 
 它把账号认证保存在 `~/.codex-auto/accounts/`，基于你现有的 Codex 使用方式启动受管会话；当前账号命中额度限制时，会自动切到下一个账号并继续恢复会话。
 
@@ -24,6 +24,7 @@
 - 交互模式保持接近日常终端里的 Codex 使用体验，自动切号或强制结束后也能把 shell 输入状态恢复正常
 - 支持保存长期生效的默认起始账号
 - 支持把账号池里的账号激活给原生 `codex` CLI 使用，且只写入该账号的 `auth.json`
+- 支持把账号池里的账号激活给 Codex App 使用，并使用原始 `CODEX_HOME` 启动 App
 - 在交互式终端中提示可用的 `codex-auto` 更新，并支持立即更新、跳过或稍后提醒
 - 命中额度限制后自动切到下一个账号
 - 能识别当前 Codex 的额度耗尽提示，包括带升级/购额链接和重试时间的提示
@@ -130,6 +131,14 @@ codex-auto activate b
 
 `codex-auto activate <name>` 会把该账号的 `auth.json` 写入原始 `CODEX_HOME`，之后直接运行 `codex` 也会使用同一个账号。不带账号名运行 `codex-auto activate` 时，会重新同步列表中 `*` 标记的账号。
 
+使用账号池账号启动 Codex App：
+
+```bash
+codex-auto --account b app
+```
+
+`codex-auto app` 会先把选中的账号激活到原始 `CODEX_HOME`，然后使用同一个 home 目录运行 `codex app`。这样 Codex App 使用的是稳定的 Codex home，而不是会在受管进程结束后被清理的临时 overlay。`app` 后面的额外参数会继续转发给 `codex app`。
+
 使用自定义原始 `CODEX_HOME` 启动：
 
 ```bash
@@ -153,7 +162,7 @@ codex-auto version
 
 ## 透传 codex 参数
 
-除了 `codex-auto` 自身的命令（`activate`、`add`、`remove`、`list`、`use`、`version`），其余参数全部原样转发给 `codex`：
+除了 `codex-auto` 自身的命令（`activate`、`add`、`app`、`remove`、`list`、`use`、`version`），其余参数全部原样转发给 `codex`：
 
 ```bash
 # 传入 prompt
@@ -239,6 +248,8 @@ codex-auto add work --auth /path/to/auth.json --config /path/to/config.toml
 每次受管运行时，`codex-auto` 都会创建 `~/.codex-auto/instances/<id>/`，把原始 `CODEX_HOME` 中的条目符号链接进去，只把 `auth.json` 替换成当前账号的真实副本，然后在这次受管运行期间持续复用同一个 overlay。命中额度限制后只替换 overlay 里的 `auth.json` 再恢复原会话，进程退出后 overlay 会被清理，因此会话历史、插件、MCP 配置等仍然保留在原始 home 里。
 
 `codex-auto activate <name>` 是显式把账号 `auth.json` 写回原始 `CODEX_HOME` 的命令，用于让原生 `codex` 使用账号池里的账号。它不会复制账号的 `config.toml`。
+
+`codex-auto app` 会复用同样的激活步骤再启动 Codex App。和受管 CLI 会话不同，Codex App 不会运行在临时 overlay 里，`codex-auto` 也不会尝试在 App 内自动额度轮换；当前自动轮换依赖终端输出和 `codex resume` 恢复流程，Codex App 没有暴露同等的可安全恢复接口。
 
 交互式会话会尽量保持你平时使用 Codex 时的终端体验，包括全屏和分屏场景；同时 `codex-auto` 仍然会在后台监控输出并在额度触发时自动切号、恢复会话，并在强制结束或切号后把控制权交还给一个输入状态正常的 shell。
 

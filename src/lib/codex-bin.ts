@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import type { Writable } from 'node:stream';
 
 export function resolveCodexCommand(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.CODEX_AUTO_CODEX_BIN?.trim();
@@ -33,6 +34,16 @@ export function buildCodexShellCommand(codexCommand: string, args: string[]): st
   return renderedArgs ? `${codexCommand} ${renderedArgs}` : codexCommand;
 }
 
+function splitCommandLine(commandLine: string): string[] {
+  const parts: string[] = [];
+  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(commandLine)) !== null) {
+    parts.push(match[1] ?? match[2] ?? match[3] ?? '');
+  }
+  return parts;
+}
+
 export async function runCodexLogin(options: {
   accountHome: string;
   cwd: string;
@@ -63,6 +74,54 @@ export async function runCodexLogin(options: {
       } else {
         reject(new Error(`codex login exited with code ${code ?? 'unknown'}`));
       }
+    });
+  });
+}
+
+export async function runCodexApp(options: {
+  codexHome: string;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  codexCommand?: string;
+  args?: string[];
+  stdout?: Writable;
+  stderr?: Writable;
+}): Promise<number> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...options.env,
+    CODEX_HOME: options.codexHome
+  };
+
+  const codexCommand = options.codexCommand ?? resolveCodexCommand(env);
+  const [command, ...prefixArgs] = splitCommandLine(codexCommand);
+  if (!command) {
+    options.stderr?.write('Missing codex command\n');
+    return 1;
+  }
+
+  return new Promise<number>((resolve) => {
+    const child = spawn(command, [...prefixArgs, 'app', ...(options.args ?? [])], {
+      cwd: options.cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      options.stdout?.write(chunk);
+    });
+
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      options.stderr?.write(chunk);
+    });
+
+    child.on('error', (error) => {
+      options.stderr?.write(`${error.message}\n`);
+      resolve(1);
+    });
+
+    child.on('exit', (code) => {
+      resolve(code ?? 1);
     });
   });
 }
