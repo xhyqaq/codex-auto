@@ -2,7 +2,7 @@
 
 English | [中文](./README.zh-CN.md)
 
-A multi-account switcher for the `codex` CLI.
+A multi-account switcher for the `codex` CLI, with account activation support for Codex App.
 
 It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessions on top of your existing setup, and automatically rotates to the next account when the current one hits a rate limit.
 
@@ -24,6 +24,7 @@ It keeps account auth under `~/.codex-auto/accounts/`, runs managed Codex sessio
 - Keep interactive Codex sessions usable in normal terminal workflows, including clean shell input after automatic rotation or forced stops
 - Save a default start account for future runs
 - Activate a managed account for the native `codex` CLI by writing only that account's `auth.json`
+- Activate a managed account and launch Codex App with the source `CODEX_HOME`
 - Prompt for available `codex-auto` updates in interactive terminals, with update, skip, or later choices
 - Automatically switch to the next account on rate limit
 - Recognize current Codex quota prompts, including upgrade/purchase messages with retry times
@@ -130,6 +131,14 @@ codex-auto activate b
 
 `codex-auto activate <name>` writes that account's `auth.json` to the source `CODEX_HOME`, so running `codex` directly uses the same account. `codex-auto activate` without a name re-syncs the account marked with `*`.
 
+Launch Codex App with a managed account:
+
+```bash
+codex-auto --account b app
+```
+
+`codex-auto app` first activates the selected account in the source `CODEX_HOME`, then runs `codex app` with that same home directory. This keeps the desktop app on a stable Codex home instead of a temporary managed overlay. Extra arguments after `app` are forwarded to `codex app`.
+
 Start from a custom source `CODEX_HOME`:
 
 ```bash
@@ -153,7 +162,7 @@ In an interactive terminal, `codex-auto` periodically checks npm for a newer `co
 
 ## Passing Through Codex Arguments
 
-Any arguments not recognized as `codex-auto` own commands (`activate`, `add`, `remove`, `list`, `use`, `version`) are forwarded directly to `codex`:
+Any arguments not recognized as `codex-auto` own commands (`activate`, `add`, `app`, `remove`, `list`, `use`, `version`) are forwarded directly to `codex`:
 
 ```bash
 # Pass a prompt
@@ -237,6 +246,8 @@ Directory structure:
 For each managed run, `codex-auto` creates `~/.codex-auto/instances/<id>/`, symlinks entries from the source `CODEX_HOME`, replaces only `auth.json` with a real copy from the selected account, and keeps reusing that overlay for the lifetime of the managed run. On quota switches it swaps only the overlay's `auth.json`, resumes the already bound session, and removes the overlay when the process exits. This keeps session history, plugins, MCP config, and other Codex state in the original home.
 
 `codex-auto activate <name>` is the explicit command that writes an account's `auth.json` back to the source `CODEX_HOME` for native `codex` usage. It does not copy account `config.toml`.
+
+`codex-auto app` uses the same activation step before launching Codex App. Unlike managed CLI sessions, Codex App is not run from a temporary overlay and `codex-auto` does not attempt automatic quota rotation inside the app; the app does not expose the terminal-output and session-resume flow that this tool uses for safe CLI recovery.
 
 Interactive sessions keep the standard Codex terminal experience, including full-screen and split-pane workflows, while `codex-auto` continues automatic account rotation and session recovery in the background and returns control to your shell in a normal input state after a forced stop or quota-driven switch.
 

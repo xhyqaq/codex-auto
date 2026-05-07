@@ -9,7 +9,7 @@ import {
   renderAccountList,
   setPreferredAccount
 } from './lib/accounts.js';
-import { runCodexLogin, resolveCodexCommand } from './lib/codex-bin.js';
+import { runCodexApp, runCodexLogin, resolveCodexCommand } from './lib/codex-bin.js';
 import { resolveAppHome, resolveCodexHome } from './lib/paths.js';
 import { loadState } from './lib/state.js';
 import { ensureAppLayout } from './lib/runtime.js';
@@ -73,7 +73,7 @@ export function extractManagedOptions(argv: string[]): {
   return { accountName, codexHome, rest };
 }
 
-const ownCommands = new Set(['activate', 'add', 'remove', 'list', 'use', 'version']);
+const ownCommands = new Set(['activate', 'add', 'app', 'remove', 'list', 'use', 'version']);
 
 export function isOwnCommand(rest: string[]): boolean {
   if (rest.includes('--help') || rest.includes('-h')) return true;
@@ -153,7 +153,7 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
   const program = new Command();
   program
     .name('codex-auto')
-    .description('Multi-account switcher for the codex CLI.\nAll unrecognized arguments are forwarded to codex.')
+    .description('Multi-account switcher for the codex CLI and Codex App account activation.\nAll unrecognized arguments are forwarded to codex.')
     .version(packageVersion, '-V, --version', 'display version')
     .option('--account <name>', 'Start this run from a specific account')
     .option('--codex-home <path>', 'Use a specific source CODEX_HOME as the overlay base')
@@ -183,6 +183,37 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
       const activatedName = await activateAccount(appHome, selectedCodexHome, name);
       stdout.write(`Activated account ${activatedName} for codex\n`);
       exitCode = 0;
+    });
+
+  program
+    .command('app')
+    .description('Activate an account in the source CODEX_HOME and launch Codex App')
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .argument('[args...]', 'Additional arguments forwarded after `codex app`')
+    .action(async (appArgs: string[]) => {
+      let state = await loadState(appHome);
+      if (state.accounts.length === 0) {
+        await bootstrapDefaultAccount(appHome, selectedCodexHome);
+        state = await loadState(appHome);
+      }
+      if (state.accounts.length === 0) {
+        stderr.write('No accounts configured. Run `codex-auto add <name>` first.\n');
+        exitCode = 1;
+        return;
+      }
+
+      const activatedName = await activateAccount(appHome, selectedCodexHome, accountName);
+      stdout.write(`Activated account ${activatedName} for Codex App\n`);
+      exitCode = await runCodexApp({
+        codexHome: selectedCodexHome,
+        cwd,
+        env,
+        codexCommand: resolveCodexCommand(env),
+        args: appArgs,
+        stdout,
+        stderr
+      });
     });
 
   program

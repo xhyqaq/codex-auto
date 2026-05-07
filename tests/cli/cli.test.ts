@@ -503,6 +503,91 @@ describe('cli', () => {
     }
   });
 
+  test('app command activates the selected account and launches codex app from source CODEX_HOME', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    const stdout = new CaptureStream();
+    try {
+      await seedState(appHome, {
+        version: 1,
+        accounts: ['alpha', 'beta'],
+        currentIndex: 0,
+        preferredAccountName: 'alpha',
+        lastSuccessfulAccount: null,
+        lastSessionId: null,
+        retryAvailabilityByAccount: {},
+        updatedAt: '2026-04-17T00:00:00.000Z'
+      });
+      await seedAccount(appHome, 'alpha', { account: 'a', token: 'a-token' });
+      await seedAccount(appHome, 'beta', { account: 'b', token: 'b-token' });
+
+      const exitCode = await runCli(['--codex-home', codexHome, '--account', 'beta', 'app', '--profile', 'work'], {
+        appHome,
+        stdout,
+        stderr: stdout,
+        stdin: process.stdin,
+        interactive: false,
+        env: {
+          ...process.env,
+          CODEX_AUTO_CODEX_BIN: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+          FAKE_CODEX_LOG: logPath
+        }
+      });
+
+      expect(exitCode).toBe(0);
+      expect(stdout.toString()).toContain('Activated account beta for Codex App');
+      expect(await readFile(path.join(codexHome, 'auth.json'), 'utf8')).toContain('b-token');
+      const records = (await readFile(logPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { args: string[]; authText: string });
+      expect(records[0]?.args).toEqual(['app', '--profile', 'work']);
+      expect(records[0]?.authText).toContain('"account": "b"');
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        currentIndex: 1,
+        preferredAccountName: 'beta'
+      });
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('app command bootstraps default account from source CODEX_HOME', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake-codex.log');
+    const stdout = new CaptureStream();
+    try {
+      await writeFile(path.join(codexHome, 'auth.json'), JSON.stringify({ account: 'default', token: 'seed-token' }, null, 2), 'utf8');
+
+      const exitCode = await runCli(['--codex-home', codexHome, 'app'], {
+        appHome,
+        stdout,
+        stderr: stdout,
+        stdin: process.stdin,
+        interactive: false,
+        env: {
+          ...process.env,
+          CODEX_AUTO_CODEX_BIN: `node ${path.resolve(process.cwd(), 'tests/fixtures/fake-codex.mjs')}`,
+          FAKE_CODEX_LOG: logPath
+        }
+      });
+
+      expect(exitCode).toBe(0);
+      expect(stdout.toString()).toContain('Activated account default for Codex App');
+      await expect(loadState(appHome)).resolves.toMatchObject({
+        accounts: ['default'],
+        preferredAccountName: 'default'
+      });
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
   test('passthrough does not add --no-alt-screen for exec subcommand', async () => {
     const appHome = await createTempAppHome();
     const codexHome = await createTempAppHome('codex-home-');
@@ -619,6 +704,10 @@ describe('extractAccountOption', () => {
 describe('isOwnCommand', () => {
   test('recognizes add as own command', () => {
     expect(isOwnCommand(['add', 'myaccount'])).toBe(true);
+  });
+
+  test('recognizes app as own command', () => {
+    expect(isOwnCommand(['app'])).toBe(true);
   });
 
   test('recognizes activate as own command', () => {
