@@ -200,6 +200,15 @@ if (process.env.FAKE_CODEX_ENABLE_CSI_U_MODE === '1') {
   process.stdout.write('\u001b[>1u');
 }
 
+if (args.includes('resume') && process.env.FAKE_CODEX_RESUME_DELAYED_QUOTA_REPLAY === '1') {
+  writeQuotaMessage(oldRetryAt);
+  setTimeout(() => {
+    if (process.env.FAKE_CODEX_REPLAY_EXIT_CODE !== '1') process.stdout.write('› \nresumed prompt ready\n');
+    process.exit(process.env.FAKE_CODEX_REPLAY_EXIT_CODE === '1' ? 1 : 0);
+  }, livePromptDelayMs);
+  await new Promise(() => {});
+}
+
 let waitingOnQuota = false;
 
 if (authText.includes('"account": "a"') || authText.includes('"account":"a"')) {

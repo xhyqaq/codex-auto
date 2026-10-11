@@ -151,6 +151,19 @@ codex-auto version
 
 In an interactive terminal, `codex-auto` periodically checks npm for a newer `codex-auto` release. When one is available, it prompts you to update now, skip that version, or postpone the reminder. Set `CODEX_AUTO_UPDATE_CHECK=0` to disable the check.
 
+When resuming, recorded quota errors with an unambiguously elapsed reset time are treated as history until a new user turn is submitted. Fresh errors, future resets, and errors without reliable reset metadata still use normal quota handling. A nonzero Codex exit retains startup-error detection.
+
+## Staying on One Account
+
+Use `--skip-failover` to run with only the selected account, keeping the managed session home and history:
+
+```bash
+codex-auto --skip-failover --account work
+codex-auto --skip-failover resume <session-id>
+```
+
+This is a per-run option; `use` and `--account` still choose the starting account as usual. Codex's quota output stays visible, but codex-auto does not interrupt it to switch accounts or send an automatic recovery prompt. If Codex exits on quota, the run exits without trying another account. Cached retry times do not prevent trying the selected account. The option is consumed by codex-auto and can be combined with other forwarded Codex arguments. Automatic failover remains the default when the option is omitted.
+
 ## Passing Through Codex Arguments
 
 Any arguments not recognized as `codex-auto` own commands (`activate`, `add`, `remove`, `list`, `use`, `version`) are forwarded directly to `codex`:

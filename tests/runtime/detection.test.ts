@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { extractQuotaRetryAvailability, hasQuotaError } from '../../src/lib/detection.js';
+import { extractQuotaRetryAvailability, hasQuotaError, removeHistoricalQuotaMessages } from '../../src/lib/detection.js';
 
 function formatMeridiemTime(date: Date): string {
   const hours24 = date.getHours();
@@ -10,6 +10,21 @@ function formatMeridiemTime(date: Date): string {
 }
 
 describe('quota detection', () => {
+  test('anchors a recorded bare reset time to its event date instead of tomorrow', () => {
+    const recorded = new Date(2026, 3, 18, 10, 59);
+    const expected = new Date(2026, 3, 18, 11, 0);
+    expect(extractQuotaRetryAvailability("You've hit your usage limit. Upgrade to Pro or try again at 11:00 AM.", recorded)?.availableAt).toBe(expected.toISOString());
+  });
+
+  test('removes exact historical text across wrapping and apostrophe variants, but preserves fresh quota', () => {
+    const old = "You’ve hit your usage limit. Upgrade to Pro or try again at 11:00 AM.";
+    const replay = "› old prompt\n■ You've hit your usage limit.\nUpgrade to Pr\no or try again at 11:00 AM.";
+    expect(hasQuotaError(removeHistoricalQuotaMessages(replay, [old]))).toBe(false);
+    expect(hasQuotaError(removeHistoricalQuotaMessages(replay + "\n› live prompt\nYou've hit your usage limit. Upgrade to Pro or try again at 3:00 PM.", [old]))).toBe(true);
+    expect(removeHistoricalQuotaMessages(replay, [old])).not.toContain("hit your usage limit");
+    expect(hasQuotaError(removeHistoricalQuotaMessages(replay.replace("Pr\no", "Pro"), []))).toBe(true);
+  });
+
   test('detects the observed codex quota exhaustion prompt', () => {
     expect(
       hasQuotaError("■ You've hit your usage limit. To get more access now, send a request to your admin.")

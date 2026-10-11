@@ -2,7 +2,7 @@ import { Writable } from 'node:stream';
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { describe, expect, test } from 'vitest';
-import { runCli, extractAccountOption, isOwnCommand } from '../../src/cli.js';
+import { runCli, extractAccountOption, extractManagedOptions, isOwnCommand } from '../../src/cli.js';
 import { loadState } from '../../src/lib/state.js';
 import { cleanupTempDir, createTempAppHome, seedAccount, seedState } from '../helpers/temp.js';
 
@@ -583,6 +583,56 @@ describe('cli', () => {
         .filter(Boolean)
         .map((line) => JSON.parse(line) as { authText: string });
       expect(records[0]?.authText).toContain('"account": "b"');
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+});
+
+describe('skip-failover option', () => {
+  test('consumes the wrapper flag while preserving yolo and explicit resume arguments', () => {
+    expect(extractManagedOptions(['--codex-home', '/tmp/synthetic-home', '--yolo', '--skip-failover', '--account', 'b', 'resume', 'synthetic-session'])).toEqual({
+      codexHome: '/tmp/synthetic-home', accountName: 'b', skipFailover: true,
+      rest: ['--yolo', 'resume', 'synthetic-session']
+    });
+    expect(extractManagedOptions(['resume', 'synthetic-session']).skipFailover).toBe(false);
+  });
+
+  test.each([[[]], [['--yolo', 'resume', 'synthetic-session']]])('CLI keeps one account with cached exhaustion and arguments %j', async (args) => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake.log');
+    const output = new CaptureStream();
+    try {
+      const future = new Date(Date.now() + 604800000).toISOString();
+      await seedState(appHome, {
+        version: 1, accounts: ['alpha', 'beta'], currentIndex: 1,
+        preferredAccountName: 'alpha', lastSuccessfulAccount: null,
+        lastSessionId: 'synthetic-session', updatedAt: new Date().toISOString(),
+        retryAvailabilityByAccount: {
+          alpha: { displayText: 'future weekly', availableAt: future },
+          beta: { displayText: 'future 5h', availableAt: future }
+        }
+      });
+      await seedAccount(appHome, 'alpha', { account: 'a', token: 'synthetic-a' });
+      await seedAccount(appHome, 'beta', { account: 'b', token: 'synthetic-b' });
+      const code = await runCli(['--skip-failover', ...args], {
+        appHome, codexHome, stdout: output, stderr: output, interactive: false,
+        env: { ...process.env, CODEX_AUTO_UPDATE_CHECK: '0',
+          CODEX_AUTO_CODEX_BIN: `node ${path.resolve('tests/fixtures/fake-codex.mjs')}`,
+          FAKE_CODEX_LOG: logPath, FAKE_CODEX_SESSION_ID: 'synthetic-session' }
+      });
+      expect(code).not.toBe(0);
+      const records = (await readFile(logPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+      expect(records).toHaveLength(1);
+      expect(records[0].authText).toContain('"account": "a"');
+      expect(records[0].args).not.toContain('--skip-failover');
+      for (const arg of args) expect(records[0].args).toContain(arg);
+      expect(output.toString()).toContain('Automatic failover disabled');
+      expect(output.toString()).not.toContain('All configured accounts are exhausted');
+      expect((await loadState(appHome)).currentIndex).toBe(0);
+      expect((await loadState(appHome)).lastSessionId).toBe('synthetic-session');
     } finally {
       await cleanupTempDir(appHome);
       await cleanupTempDir(codexHome);

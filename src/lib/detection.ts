@@ -9,7 +9,7 @@ const retryAtPattern = /or try again at ([^\n.]+)\.?/i;
 
 const promptPattern = /(^|\n)(?:›|>)(?:\s|$)/g;
 
-function parseMeridiemTime(displayText: string): Date | null {
+function parseMeridiemTime(displayText: string, referenceTime: Date): Date | null {
   const trimmed = displayText.trim();
 
   // Strip ordinal suffixes so native Date.parse can handle "Apr 25th, 2026 1:44 AM" etc.
@@ -32,7 +32,7 @@ function parseMeridiemTime(displayText: string): Date | null {
     return null;
   }
 
-  const now = new Date();
+  const now = referenceTime;
   const candidate = new Date(now);
   let normalizedHours = hours % 12;
   if (period.toUpperCase() === 'PM') {
@@ -80,7 +80,7 @@ export function hasQuotaError(output: string): boolean {
   return quotaPatterns.some((pattern) => pattern.test(normalized));
 }
 
-export function extractQuotaRetryAvailability(output: string): RetryAvailability | null {
+export function extractQuotaRetryAvailability(output: string, referenceTime = new Date()): RetryAvailability | null {
   const normalized = sanitizeTerminalOutput(output);
   const match = normalized.match(retryAtPattern);
   const displayText = match?.[1]?.trim();
@@ -88,7 +88,7 @@ export function extractQuotaRetryAvailability(output: string): RetryAvailability
     return null;
   }
 
-  const availableAt = parseMeridiemTime(displayText);
+  const availableAt = parseMeridiemTime(displayText, referenceTime);
   if (!availableAt) {
     return null;
   }
@@ -97,4 +97,15 @@ export function extractQuotaRetryAvailability(output: string): RetryAvailability
     displayText,
     availableAt: availableAt.toISOString()
   };
+}
+
+// Exact stored errors can wrap across terminal lines or use either apostrophe.
+export function removeHistoricalQuotaMessages(output: string, messages: string[]): string {
+  let filtered = output.replace(/’/g, "'");
+  for (const message of messages) {
+    const characters = Array.from(sanitizeTerminalOutput(message).replace(/’/g, "'").replace(/\s+/g, ''));
+    const escaped = characters.map(character => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    filtered = filtered.replace(new RegExp(escaped.join('\\s*'), 'g'), '');
+  }
+  return filtered;
 }

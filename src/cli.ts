@@ -52,11 +52,13 @@ export function extractAccountOption(argv: string[]): { accountName: string | un
 export function extractManagedOptions(argv: string[]): {
   accountName: string | undefined;
   codexHome: string | undefined;
+  skipFailover: boolean;
   rest: string[];
 } {
   const rest: string[] = [];
   let accountName: string | undefined;
   let codexHome: string | undefined;
+  let skipFailover = false;
   let i = 0;
   while (i < argv.length) {
     if (argv[i] === '--account' && i + 1 < argv.length) {
@@ -65,12 +67,15 @@ export function extractManagedOptions(argv: string[]): {
     } else if (argv[i] === '--codex-home' && i + 1 < argv.length) {
       codexHome = argv[i + 1];
       i += 2;
+    } else if (argv[i] === '--skip-failover') {
+      skipFailover = true;
+      i += 1;
     } else {
       rest.push(argv[i]!);
       i += 1;
     }
   }
-  return { accountName, codexHome, rest };
+  return { accountName, codexHome, skipFailover, rest };
 }
 
 const ownCommands = new Set(['activate', 'add', 'remove', 'list', 'use', 'version']);
@@ -107,7 +112,7 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
 
   await ensureAppLayout(appHome);
 
-  const { accountName, codexHome, rest } = extractManagedOptions(argv);
+  const { accountName, codexHome, skipFailover, rest } = extractManagedOptions(argv);
   const selectedCodexHome = codexHome ?? defaultCodexHome;
 
   if (shouldPromptForUpdate(rest)) {
@@ -137,6 +142,7 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
       codexHome: selectedCodexHome,
       workspaceDir: cwd,
       preferredAccountName: accountName,
+      skipFailover,
       extraArgs: rest,
       env,
       stdin,
@@ -155,6 +161,7 @@ export async function runCli(argv: string[], options: CliRunOptions = {}): Promi
     .name('codex-auto')
     .description('Multi-account switcher for the codex CLI.\nAll unrecognized arguments are forwarded to codex.')
     .version(packageVersion, '-V, --version', 'display version')
+    .option('--skip-failover', 'Stay on the selected account without automatic quota switching')
     .option('--account <name>', 'Start this run from a specific account')
     .option('--codex-home <path>', 'Use a specific source CODEX_HOME as the overlay base')
     .showHelpAfterError()

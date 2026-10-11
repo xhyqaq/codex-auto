@@ -79,6 +79,109 @@ class TtyInputStream extends PassThrough {
 }
 
 describe('managed session runner', () => {
+  test.each(['elapsed', 'future', 'invalid', 'missing', 'elapsed-startup-error'])('automatic failover distinguishes recorded %s reset from fresh output', async (reset) => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const sessionId = 'synthetic-recorded-reset';
+    const logPath = path.join(appHome, 'fake.log');
+    try {
+      await seedCodexHome(codexHome);
+      await seedExistingSession(codexHome, { id: sessionId, updatedAt: '2026-04-17T00:00:00Z' });
+      const recorded = new Date();
+      recorded.setDate(recorded.getDate() + (reset === 'future' ? 7 : -2));
+      recorded.setHours(12, 0, 0, 0);
+      const message = "You've hit your usage limit. To get more access now, send a request to your admin.\nor try again at 7:37 PM.";
+      const sessionFile = path.join(codexHome, 'sessions', '2026', '04', '17', `rollout-2026-04-17T18-00-00-${sessionId}.jsonl`);
+      const original = await readFile(sessionFile, 'utf8');
+      const entry = { type: 'event_msg', timestamp: reset === 'invalid' ? 'invalid' : recorded.toISOString(), payload: { error: { message } } };
+      await writeFile(sessionFile, original + (reset === 'missing' ? '' : JSON.stringify(entry) + '\n'));
+      await seedState(appHome, {
+        version: 1, accounts: ['a', 'b'], currentIndex: 0,
+        preferredAccountName: 'a', lastSuccessfulAccount: null, lastSessionId: sessionId,
+        updatedAt: new Date().toISOString()
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'synthetic-a' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'synthetic-b' });
+      const result = await runManagedSession({
+        appHome, codexHome, workspaceDir: process.cwd(),
+        codexCommand: `node ${path.resolve('tests/fixtures/fake-codex.mjs')}`,
+        extraArgs: ['--yolo', 'resume', sessionId],
+        env: { ...process.env, FAKE_CODEX_LOG: logPath,
+          FAKE_CODEX_RESUME_DELAYED_QUOTA_REPLAY: '1', FAKE_CODEX_LIVE_PROMPT_DELAY_MS: '700',
+          FAKE_CODEX_REPLAY_EXIT_CODE: reset === 'elapsed-startup-error' ? '1' : '0' },
+        interactive: false
+      });
+      expect(result.switchCount).toBe(reset === 'elapsed' ? 0 : 1);
+      expect(result.exhaustedAll).toBe(reset !== 'elapsed');
+      expect((await readFile(logPath, 'utf8')).trim().split('\n')).toHaveLength(reset === 'elapsed' ? 1 : 2);
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test.each([false, true])('skip-failover allows delayed resume replay without killing it (interactive=%s)', async (interactive) => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake.log');
+    const sessionId = 'synthetic-replay';
+    try {
+      await seedCodexHome(codexHome);
+      await seedExistingSession(codexHome, { id: sessionId, updatedAt: '2026-04-17T00:00:00Z' });
+      await seedState(appHome, {
+        version: 1, accounts: ['a', 'b'], currentIndex: 0,
+        preferredAccountName: 'a', lastSuccessfulAccount: null, lastSessionId: sessionId,
+        updatedAt: new Date().toISOString()
+      });
+      await seedAccount(appHome, 'a', { account: 'a', token: 'synthetic-a' });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'synthetic-b' });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await runManagedSession({
+          appHome, codexHome, workspaceDir: process.cwd(), skipFailover: true,
+          codexCommand: `node ${path.resolve('tests/fixtures/fake-codex.mjs')}`,
+          extraArgs: ['--yolo', 'resume', sessionId],
+          env: { ...process.env, FAKE_CODEX_LOG: logPath,
+            FAKE_CODEX_RESUME_DELAYED_QUOTA_REPLAY: '1', FAKE_CODEX_LIVE_PROMPT_DELAY_MS: '700' },
+          interactive,
+          ...(interactive ? { stdin: new TtyInputStream() as unknown as NodeJS.ReadStream, stdout: new TtyCaptureStream() } : {})
+        });
+        expect(result).toMatchObject({ switchCount: 0, exhaustedAll: false, exitCode: 0, finalAccount: 'a' });
+      }
+      expect((await readFile(logPath, 'utf8')).trim().split('\n')).toHaveLength(2);
+      expect((await loadState(appHome)).retryAvailabilityByAccount).toEqual({});
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
+  test('skip-failover surfaces fresh quota after prompt without rotation', async () => {
+    const appHome = await createTempAppHome();
+    const codexHome = await createTempAppHome('codex-home-');
+    const logPath = path.join(appHome, 'fake.log');
+    try {
+      await seedCodexHome(codexHome);
+      await seedState(appHome, {
+        version: 1, accounts: ['b', 'c'], currentIndex: 0,
+        preferredAccountName: 'b', lastSuccessfulAccount: null, lastSessionId: null,
+        updatedAt: new Date().toISOString()
+      });
+      await seedAccount(appHome, 'b', { account: 'b', token: 'synthetic-b' });
+      await seedAccount(appHome, 'c', { account: 'c', token: 'synthetic-c' });
+      const result = await runManagedSession({
+        appHome, codexHome, workspaceDir: process.cwd(), skipFailover: true,
+        codexCommand: `node ${path.resolve('tests/fixtures/fake-codex.mjs')}`,
+        env: { ...process.env, FAKE_CODEX_LOG: logPath, FAKE_CODEX_EMIT_QUOTA_AFTER_PROMPT: '1', FAKE_CODEX_REPLAY_OLD_QUOTA_BEFORE_PROMPT: '1' },
+        interactive: false
+      });
+      expect(result).toMatchObject({ switchCount: 0, exhaustedAll: false, exitCode: 1, finalAccount: 'b' });
+      expect((await readFile(logPath, 'utf8')).trim().split('\n')).toHaveLength(1);
+    } finally {
+      await cleanupTempDir(appHome);
+      await cleanupTempDir(codexHome);
+    }
+  });
+
   test('switches accounts and resumes with persisted session id after quota failure', async () => {
     const appHome = await createTempAppHome();
     const codexHome = await createTempAppHome('codex-home-');
